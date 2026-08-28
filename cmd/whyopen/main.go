@@ -9,12 +9,17 @@ import (
 	"os"
 
 	"github.com/MemorManeo/whyopen/internal/collect"
+	"github.com/MemorManeo/whyopen/internal/facts"
+	"github.com/MemorManeo/whyopen/internal/model"
+	"github.com/MemorManeo/whyopen/internal/report"
 )
 
 const usage = `whyopen: what is actually reachable from the internet, and why.
 
 Usage:
-  whyopen collect [-o FILE]   snapshot this host into a facts document
+  whyopen collect [-o FILE]        snapshot this host into a facts document
+  whyopen check [-facts FILE] [-explain PORT]
+                                    report what is reachable, and why
 
 whyopen is read-only. It never creates, changes or deletes a rule.
 `
@@ -33,6 +38,8 @@ func main() {
 	switch os.Args[1] {
 	case "collect":
 		os.Exit(runCollect(os.Args[2:]))
+	case "check":
+		os.Exit(runCheck(os.Args[2:]))
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		os.Exit(exitOK)
@@ -85,5 +92,59 @@ func runCollect(args []string) int {
 			return exitError
 		}
 	}
+	return exitOK
+}
+
+func runCheck(args []string) int {
+	fs := flag.NewFlagSet("check", flag.ContinueOnError)
+	factsPath := fs.String("facts", "", "evaluate this facts document instead of collecting one")
+	explain := fs.Int("explain", 0, "print the full rule path for this port")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			fmt.Print(usage)
+			return exitOK
+		}
+		// ContinueOnError already printed the parse error to fs.Output().
+		return exitError
+	}
+
+	var (
+		f   facts.Facts
+		err error
+	)
+	if *factsPath != "" {
+		b, readErr := os.ReadFile(*factsPath)
+		if readErr != nil {
+			fmt.Fprintf(os.Stderr, "read %s: %v\n", *factsPath, readErr)
+			return exitError
+		}
+		if err = json.Unmarshal(b, &f); err != nil {
+			fmt.Fprintf(os.Stderr, "parse %s: %v\n", *factsPath, err)
+			return exitError
+		}
+		if f.SchemaVersion != facts.SchemaVersion {
+			fmt.Fprintf(os.Stderr, "facts schema version %d, this build understands %d\n",
+				f.SchemaVersion, facts.SchemaVersion)
+			return exitError
+		}
+	} else {
+		f, err = collect.All(collect.Options{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "collect: %v\n", err)
+			return exitError
+		}
+	}
+
+	verdicts := model.Evaluate(f, model.InternetZone())
+
+	if *explain != 0 {
+		for _, v := range verdicts {
+			if int(v.Endpoint.Port) == *explain {
+				report.Explain(os.Stdout, v)
+			}
+		}
+		return exitOK
+	}
+	report.Table(os.Stdout, verdicts, f.Warnings)
 	return exitOK
 }
