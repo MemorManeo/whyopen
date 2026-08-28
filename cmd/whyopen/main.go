@@ -143,13 +143,20 @@ func runCheck(args []string) int {
 				report.Explain(os.Stdout, v)
 			}
 		}
-		return exitOK
+	} else {
+		report.Table(os.Stdout, verdicts, f.Warnings)
 	}
-	report.Table(os.Stdout, verdicts, f.Warnings)
+
+	// One shared decision for every output mode: whatever check just
+	// printed (table, explain, or a future mode), the exit code is what
+	// cron and CI actually read, and a verdict built on an unreadable
+	// ruleset is a tool error, not a clean run, no matter how it was
+	// displayed.
+	return checkExitCode(f)
+}
+
+func checkExitCode(f facts.Facts) int {
 	if f.Ruleset.ReadFailed {
-		// The table above already told the operator every verdict is
-		// unknown and why; the exit code is what cron and CI actually
-		// read, so this is a tool error (exit 3), not a clean run.
 		fmt.Fprintln(os.Stderr, "the nftables ruleset could not be read, so every verdict above is unknown; re-run as root")
 		return exitError
 	}
