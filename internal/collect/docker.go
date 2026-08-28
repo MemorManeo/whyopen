@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -100,9 +101,18 @@ func containerName(names []string) string {
 }
 
 func firstNetworkIP(c dockerContainer) string {
-	for _, n := range c.NetworkSettings.Networks {
-		if n.IPAddress != "" {
-			return n.IPAddress
+	// Sort network names to ensure deterministic iteration order across runs.
+	// Go randomizes map iteration, so without this a container with multiple
+	// networks would produce different ContainerIP on each collection.
+	var names []string
+	for name := range c.NetworkSettings.Networks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if c.NetworkSettings.Networks[name].IPAddress != "" {
+			return c.NetworkSettings.Networks[name].IPAddress
 		}
 	}
 	return ""
