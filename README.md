@@ -38,9 +38,13 @@ global unicast address in that family, a jump loop past its depth bound. An
 
 ## Requirements
 
-- Linux only, with an nftables ruleset (`iptables`-only hosts using the
-  legacy backend are not read; UFW and Docker's DNAT rules both go through
-  nftables today and are covered).
+- Linux only, with an nftables ruleset. UFW and Docker's DNAT rules both go
+  through nftables today and are covered. Rules written to the
+  **iptables-legacy** backend are invisible to whyopen, which reads only
+  nftables; it detects their presence (a non-empty `/proc/net/ip_tables_names`
+  or `/proc/net/ip6_tables_names`, which only the legacy kernel modules
+  create) and prints a warning saying every verdict may be incomplete.
+  firewalld is not modelled either.
 - Must run as **root** (or at least with `CAP_NET_ADMIN`) to list the
   ruleset over netlink and to attribute every listening socket to a
   process. Run unprivileged and whyopen still lists every listener it can

@@ -39,6 +39,8 @@ func All(opts Options) (facts.Facts, error) {
 	f.Sockets = socks
 	f.Warnings = append(f.Warnings, warns...)
 
+	f.Warnings = append(f.Warnings, LegacyBackend(opts.ProcRoot)...)
+
 	rs, warns, err := Ruleset()
 	f.Warnings = append(f.Warnings, warns...)
 	if err != nil {

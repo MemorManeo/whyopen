@@ -4,6 +4,8 @@ package collect
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -164,5 +166,64 @@ func TestReadRulesetListsChainsOncePerFamily(t *testing.T) {
 	}
 	if f.chainCalls != 1 {
 		t.Fatalf("ListChainsOfTableFamily called %d times for 2 tables in one family, want 1", f.chainCalls)
+	}
+}
+
+// I6: the README claimed iptables-legacy hosts "are not read", but nothing
+// detected them. On such a host ListTables succeeds against an empty nft
+// ruleset and every port reports reachable with no warning at all.
+func TestLegacyBackendIsDetectedAndWarnsLoudly(t *testing.T) {
+	proc := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(proc, "net"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "net", "ip_tables_names"), []byte("nat\nfilter\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	warns := LegacyBackend(proc)
+	if len(warns) != 1 {
+		t.Fatalf("warnings = %+v, want exactly one", warns)
+	}
+	if warns[0].Source != "ruleset" {
+		t.Fatalf("source = %q, want ruleset", warns[0].Source)
+	}
+	for _, want := range []string{"iptables-legacy", "filter", "incomplete"} {
+		if !strings.Contains(warns[0].Message, want) {
+			t.Fatalf("message = %q, missing %q", warns[0].Message, want)
+		}
+	}
+}
+
+// An nftables-only host has no such file, and a host where the module is
+// loaded but carries no table must not be warned about either.
+func TestLegacyBackendSilentOnAnNftablesHost(t *testing.T) {
+	proc := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(proc, "net"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if warns := LegacyBackend(proc); len(warns) != 0 {
+		t.Fatalf("warnings = %+v, want none when the module is not loaded", warns)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "net", "ip_tables_names"), []byte("\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if warns := LegacyBackend(proc); len(warns) != 0 {
+		t.Fatalf("warnings = %+v, want none when the file lists no table", warns)
+	}
+}
+
+// Both families are checked, and each names its own backend.
+func TestLegacyBackendDetectsIPv6Separately(t *testing.T) {
+	proc := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(proc, "net"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "net", "ip6_tables_names"), []byte("filter\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	warns := LegacyBackend(proc)
+	if len(warns) != 1 || !strings.Contains(warns[0].Message, "ip6tables-legacy") {
+		t.Fatalf("warnings = %+v, want one naming the ip6 legacy backend", warns)
 	}
 }

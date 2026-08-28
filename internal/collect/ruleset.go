@@ -4,6 +4,9 @@ package collect
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/MemorManeo/whyopen/internal/facts"
 	"github.com/google/nftables"
@@ -164,4 +167,41 @@ func PolicyName(p *nftables.ChainPolicy) string {
 		return "accept"
 	}
 	return "unknown"
+}
+
+// legacyTableFiles are the /proc entries the ip_tables and ip6_tables kernel
+// modules create once a legacy ruleset is loaded. iptables-nft never loads
+// those modules, so a non-empty file here is a serviceable signal that real
+// iptables-legacy rules exist.
+var legacyTableFiles = []struct {
+	rel     string
+	backend string
+}{
+	{"net/ip_tables_names", "iptables-legacy"},
+	{"net/ip6_tables_names", "ip6tables-legacy"},
+}
+
+// LegacyBackend reports iptables-legacy rules on the host. whyopen reads only
+// the nftables ruleset; on a legacy host ListTables succeeds against an empty
+// nft ruleset, so without this check every port would report reachable with
+// nothing to say it was the wrong backend that was read. procRoot is "/proc"
+// in production.
+func LegacyBackend(procRoot string) []facts.Warning {
+	var warns []facts.Warning
+	for _, f := range legacyTableFiles {
+		b, err := os.ReadFile(filepath.Join(procRoot, f.rel))
+		if err != nil {
+			continue // the module is not loaded, which is the ordinary case
+		}
+		tables := strings.Fields(string(b))
+		if len(tables) == 0 {
+			continue
+		}
+		warns = append(warns, facts.Warning{
+			Source: "ruleset",
+			Message: fmt.Sprintf("%s rules are present: /proc/%s lists the tables %s. whyopen reads only the nftables ruleset, so it cannot see them and EVERY verdict below may be incomplete: a port reported filtered may in fact be open",
+				f.backend, f.rel, strings.Join(tables, ", ")),
+		})
+	}
+	return warns
 }
