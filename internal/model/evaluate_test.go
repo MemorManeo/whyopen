@@ -523,3 +523,51 @@ func TestUFWIPv6BeforeInputRulesDoNotPoisonTheVerdict(t *testing.T) {
 		}
 	}
 }
+
+// Ledger minor: nothing durable covered the mixed multi-candidate case. A
+// multi-homed host produces one result per public address, and the strongest
+// must win whichever position it lands in, with the surviving reason
+// belonging to the candidate that actually won.
+func TestStrongestCandidateWinsAndKeepsItsOwnReason(t *testing.T) {
+	acceptOn := func(addrHex string) facts.Rule {
+		return facts.Rule{Handle: 30, Exprs: []facts.Expr{
+			{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "network", Offset: 16, Len: 4}},
+			{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: addrHex}},
+			{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+			{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: "20fb"}},
+			{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+		}}
+	}
+	// publicAddrs enumerates interfaces in order, then addresses in order,
+	// so the accepted address is second in one case and first in the other.
+	cases := []struct {
+		name    string
+		addrHex string
+		wantVia string
+	}{
+		{"accepted candidate is enumerated second", "c0000237", "192.0.2.55"},
+		{"accepted candidate is enumerated first", "cb00710a", "203.0.113.10"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := hostFacts()
+			f.Host.Interfaces[0].Addresses = append(f.Host.Interfaces[0].Addresses,
+				facts.Addr{IP: "192.0.2.55", Prefix: 24, Family: "ip", Scope: "global"})
+			filter := ufwFilter()
+			filter.Chains[0].Rules = append(filter.Chains[0].Rules, acceptOn(c.addrHex))
+			f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter}}
+			f.Sockets = []facts.Socket{{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 8443, Unit: "svc.service"}}
+
+			vs := Evaluate(f, InternetZone())
+			if len(vs) != 1 {
+				t.Fatalf("got %d verdicts, want 1: %+v", len(vs), vs)
+			}
+			if vs[0].Result != "reachable" {
+				t.Fatalf("result = %q (%s), want reachable: one public address accepts", vs[0].Result, vs[0].Reason)
+			}
+			if !strings.Contains(vs[0].Reason, c.wantVia) {
+				t.Fatalf("reason = %q, want it to name the winning candidate %s", vs[0].Reason, c.wantVia)
+			}
+		})
+	}
+}

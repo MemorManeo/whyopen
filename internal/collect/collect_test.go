@@ -5,6 +5,7 @@ package collect
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/MemorManeo/whyopen/internal/facts"
@@ -28,11 +29,36 @@ func TestAllDegradesToWarnings(t *testing.T) {
 	if got.CapturedAt.IsZero() {
 		t.Fatalf("captured_at not set")
 	}
-	var sources []string
+	// Assert the exact set of sources, not just that some warning exists: a
+	// regression that dropped one collector's warnings entirely would pass a
+	// len > 0 check while hiding a whole unread part of the host.
+	seen := map[string]bool{}
 	for _, w := range got.Warnings {
-		sources = append(sources, w.Source)
+		seen[w.Source] = true
 	}
-	if len(sources) == 0 {
-		t.Fatalf("expected warnings from the unreadable sources, got none")
+	want := []string{"docker", "host", "sockets"}
+	if got.Ruleset.ReadFailed {
+		// Netlink is unreadable without CAP_NET_ADMIN, which is the usual
+		// case for this test. Under root the read succeeds and warns about
+		// nothing, so the expectation follows what actually happened.
+		want = append(want, "ruleset")
 	}
+	for _, src := range want {
+		if !seen[src] {
+			t.Fatalf("no warning from %q; sources seen: %v", src, sortedKeys(seen))
+		}
+		delete(seen, src)
+	}
+	if len(seen) != 0 {
+		t.Fatalf("unexpected warning sources: %v", sortedKeys(seen))
+	}
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

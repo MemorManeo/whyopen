@@ -360,3 +360,25 @@ func TestUnresolvableMatchAlongsideAnActionTargetStillPoisons(t *testing.T) {
 		t.Fatalf("out=%v, want unknown: the REJECT target is terminal", out)
 	}
 }
+
+// Ledger minor: no test exercised a successful bitwise resolution, so the
+// payload/bitwise/cmp triple that every subnet match compiles to was
+// unexercised. The packet's destination 203.0.113.10 is inside
+// 203.0.113.0/24 and outside 10.0.0.0/8.
+func TestMatchBitwiseSubnet(t *testing.T) {
+	rule := facts.Rule{Handle: 24, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "network", Offset: 16, Len: 4}},
+		{Kind: facts.ExprBitwise, Bitwise: &facts.BitwiseExpr{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: "ffffff00", Xor: "00000000"}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: "cb007100"}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, act := MatchRule(testPacket(), rule); out != OutcomeMatch || act.Kind != "accept" {
+		t.Fatalf("out=%v act=%+v, want match/accept: 203.0.113.10 is in 203.0.113.0/24", out, act)
+	}
+
+	rule.Exprs[1].Bitwise.Mask = "ff000000"
+	rule.Exprs[2].Cmp.Data = "0a000000"
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeNoMatch {
+		t.Fatalf("out=%v, want no match: 203.0.113.10 is not in 10.0.0.0/8", out)
+	}
+}

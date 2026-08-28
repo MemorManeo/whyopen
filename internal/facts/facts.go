@@ -87,11 +87,17 @@ type Chain struct {
 	Name string `json:"name"`
 	Base bool   `json:"base"`
 	// Hook is prerouting | input | forward | output | postrouting, empty for
-	// regular chains. Priority orders base chains within one hook, ascending.
+	// regular chains, or "unknown" when the collector met a hook number it
+	// could not name. Priority orders base chains within one hook,
+	// ascending.
 	Hook     string `json:"hook,omitempty"`
 	Priority int32  `json:"priority,omitempty"`
-	Policy   string `json:"policy,omitempty"` // accept | drop, base chains only
-	Rules    []Rule `json:"rules"`
+	// Policy is accept | drop for a base chain, empty for a regular chain,
+	// or "unknown" when the collector met a policy value it could not name.
+	// Both "unknown" and an unexpected empty value make the chain
+	// unresolvable to the evaluator rather than defaulting to accept.
+	Policy string `json:"policy,omitempty"`
+	Rules  []Rule `json:"rules"`
 }
 
 type Rule struct {
