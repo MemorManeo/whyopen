@@ -31,10 +31,16 @@ unknown    9000/tcp   IPv6    my-app               ::         DNAT target is not
 
 `unknown` is a first-class verdict, not an error. whyopen returns it whenever
 it cannot follow the packet with confidence instead of guessing: an
-unreadable iptables-nft compatibility match it does not decode, a DNAT
-target that lands on no interface subnet it knows about, a host with no
-global unicast address in that family, a jump loop past its depth bound. An
-`unknown` result means "go look by hand," not "this is fine."
+unreadable iptables-nft compatibility match it does not decode, an nftables
+expression it has no decoder for, a DNAT target that lands on no interface
+subnet it knows about, a host with no global unicast address in that family,
+a jump loop past its depth bound. An `unknown` result means "go look by
+hand," not "this is fine."
+
+Known gaps that produce `unknown` today:
+
+- `xt recent` is not decoded, so a port UFW rate-limits (`ufw limit 22/tcp`)
+  reports `unknown` rather than a verdict.
 
 ## Requirements
 

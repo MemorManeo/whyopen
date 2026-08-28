@@ -19,7 +19,7 @@ func MatchRule(pkt *Packet, r facts.Rule) (Outcome, Action) {
 	regs := map[uint32][]byte{}
 	act := Action{Kind: "none"}
 
-	for _, e := range r.Exprs {
+	for i, e := range r.Exprs {
 		switch e.Kind {
 		case facts.ExprPayload:
 			b, ok := payloadBytes(pkt, e.Payload)
@@ -76,6 +76,9 @@ func MatchRule(pkt *Packet, r facts.Rule) (Outcome, Action) {
 		case facts.ExprXt:
 			out, a, ok := xtExpr(pkt, e.Xt)
 			if !ok {
+				if skippableUnresolvedMatch(pkt, r, i) {
+					return OutcomeNoMatch, act
+				}
 				return OutcomeUnknown, act
 			}
 			if out == OutcomeNoMatch {
@@ -105,6 +108,44 @@ func MatchRule(pkt *Packet, r facts.Rule) (Outcome, Action) {
 		}
 	}
 	return OutcomeMatch, act
+}
+
+// skippableUnresolvedMatch reports whether the unresolved xt expression at
+// index idx can be skipped instead of poisoning the whole verdict. That is
+// true only when the rule carries no verdict at all, because then neither
+// outcome of the match changes where the packet goes next. UFW's SSH rate
+// limiter is exactly this shape: "tcp dport 22 ct state new xt match recent"
+// with no verdict (the --set half), followed by a separate rule carrying the
+// jump (the --update half).
+//
+// The scoping is deliberately narrow, because an unresolved element can be
+// terminal in its own right. It never applies when the unresolved element is
+// an xt target, nor when any other expression in the rule is a verdict, a
+// facts.ExprUnknown, an xt expression that is itself unresolvable, or an xt
+// expression that yields an action of its own.
+func skippableUnresolvedMatch(pkt *Packet, r facts.Rule, idx int) bool {
+	if x := r.Exprs[idx].Xt; x == nil || x.Kind != "match" {
+		return false
+	}
+	for i, e := range r.Exprs {
+		if i == idx {
+			continue
+		}
+		switch e.Kind {
+		case facts.ExprPayload, facts.ExprCmp, facts.ExprMeta, facts.ExprBitwise, facts.ExprOther:
+			// Recognised, and with no verdict in the rule it cannot matter
+			// whether they match.
+		case facts.ExprXt:
+			_, a, ok := xtExpr(pkt, e.Xt)
+			if !ok || a.Kind != "none" {
+				return false
+			}
+		default:
+			// A verdict, a facts.ExprUnknown, or a kind from a newer schema.
+			return false
+		}
+	}
+	return true
 }
 
 // payloadBytes synthesises the requested header slice. Any offset whyopen

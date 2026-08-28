@@ -291,3 +291,72 @@ func TestHLMatchCannotMatchAnInternetSourcedPacket(t *testing.T) {
 		t.Fatalf("out=%v, want no match: an internet-sourced packet cannot have hop limit 255", out)
 	}
 }
+
+// L2: UFW's SSH rate limiter emits "tcp dport 22 ct state new xt match
+// recent" with no verdict at all (the --set half of --update/--set),
+// followed by a second rule carrying the jump. The first rule cannot change
+// traversal whether it matches or not, so an unresolvable match inside it
+// must not poison the verdict.
+func TestUnresolvableMatchInAVerdictlessRuleIsSkipped(t *testing.T) {
+	rule := facts.Rule{Handle: 19, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: "0016"}},
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "conntrack", Decoded: true,
+			Conntrack: &facts.ConntrackInfo{MatchesState: true, States: []string{"new"}}}},
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent"}},
+		{Kind: facts.ExprOther, Note: "counter"},
+	}}
+	p := testPacket()
+	p.DstPort = 22
+	if out, act := MatchRule(p, rule); out != OutcomeNoMatch || act.Kind != "none" {
+		t.Fatalf("out=%v act=%+v, want the rule skipped: it has no verdict to apply", out, act)
+	}
+}
+
+// The same rule with a verdict is back to poisoning: now the outcome of the
+// unresolvable match decides where the packet goes.
+func TestUnresolvableMatchWithAVerdictStillPoisons(t *testing.T) {
+	rule := facts.Rule{Handle: 20, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent"}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "jump", Chain: "ufw-user-limit"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeUnknown {
+		t.Fatalf("out=%v, want unknown: the match decides whether the jump is taken", out)
+	}
+}
+
+// The shortcut must never cover a facts.ExprUnknown. An expression the
+// collector had no decoder for can be terminal in its own right, so a rule
+// carrying one is unresolvable whether it has a verdict or not.
+func TestUnknownExprInAVerdictlessRuleStillPoisons(t *testing.T) {
+	rule := facts.Rule{Handle: 21, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent"}},
+		{Kind: facts.ExprUnknown, Note: "*expr.Reject"},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeUnknown {
+		t.Fatalf("out=%v, want unknown: an undecoded expression may itself be terminal", out)
+	}
+}
+
+// Nor an xt target: REJECT is terminal, and a target whyopen cannot resolve
+// may be too.
+func TestUnresolvableTargetInAVerdictlessRuleStillPoisons(t *testing.T) {
+	rule := facts.Rule{Handle: 22, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "target", Name: "TCPMSS"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeUnknown {
+		t.Fatalf("out=%v, want unknown: an unresolved target can be terminal", out)
+	}
+}
+
+// Nor a rule whose other xt expression yields an action of its own, even
+// though that one is resolvable.
+func TestUnresolvableMatchAlongsideAnActionTargetStillPoisons(t *testing.T) {
+	rule := facts.Rule{Handle: 23, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent"}},
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "target", Name: "REJECT"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeUnknown {
+		t.Fatalf("out=%v, want unknown: the REJECT target is terminal", out)
+	}
+}
