@@ -4,6 +4,7 @@ package collect
 
 import (
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/MemorManeo/whyopen/internal/facts"
@@ -190,5 +191,42 @@ func TestConvertConntrackWithExtraMatchFlagIsNotFullyDecoded(t *testing.T) {
 	}
 	if ct := got[0].Xt.Conntrack; ct == nil || !ct.MatchesState {
 		t.Fatalf("the state half must still be recorded for diagnosis: %+v", got[0].Xt)
+	}
+}
+
+// I3: both lists used to be built by ranging a map, so their order differed
+// between runs over identical input. A facts document is meant to be
+// committed as a golden fixture and diffed between cron runs, which makes a
+// shuffled slice a spurious diff. Assert exact contents, not set membership.
+func TestDecodedListsAreInAFixedOrder(t *testing.T) {
+	info := &xt.ConntrackMtinfo3{}
+	info.MatchFlags = 0x1
+	info.StateMask = 0xF // invalid + established + related + new
+	got := ConvertExprs([]expr.Any{
+		&expr.Match{Name: "conntrack", Rev: 3, Info: info},
+		// every addrtype bit whyopen names, dest and source alike
+		&expr.Match{Name: "addrtype", Rev: 1, Info: &xt.AddrTypeV1{Dest: 0x3F, Source: 0x3F}},
+	})
+
+	wantStates := "invalid,established,related,new"
+	if s := strings.Join(got[0].Xt.Conntrack.States, ","); s != wantStates {
+		t.Fatalf("states = %q, want %q", s, wantStates)
+	}
+	wantTypes := "unspec,unicast,local,broadcast,anycast,multicast"
+	at := got[1].Xt.AddrType
+	if s := strings.Join(at.DestTypes, ","); s != wantTypes {
+		t.Fatalf("dest types = %q, want %q", s, wantTypes)
+	}
+	if s := strings.Join(at.SourceTypes, ","); s != wantTypes {
+		t.Fatalf("source types = %q, want %q", s, wantTypes)
+	}
+
+	// Repeat: a map-ranging regression shows up as an occasional shuffle,
+	// not a consistent one.
+	for i := 0; i < 200; i++ {
+		again := ConvertExprs([]expr.Any{&expr.Match{Name: "addrtype", Rev: 1, Info: &xt.AddrTypeV1{Dest: 0x3F}}})
+		if s := strings.Join(again[0].Xt.AddrType.DestTypes, ","); s != wantTypes {
+			t.Fatalf("run %d: dest types = %q, want %q", i, s, wantTypes)
+		}
 	}
 }

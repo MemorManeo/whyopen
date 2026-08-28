@@ -23,6 +23,23 @@ const (
 	ctStateNew         = 0x8
 )
 
+// bitName pairs a mask bit with the name whyopen records for it. These are
+// ordered slices rather than maps on purpose: a facts document is meant to
+// be committed as a golden fixture and diffed between cron runs, and Go
+// randomises map iteration, so ranging a map here made the output order
+// differ from run to run over identical input.
+type bitName struct {
+	bit  uint16
+	name string
+}
+
+var ctStateNames = []bitName{
+	{ctStateInvalid, "invalid"},
+	{ctStateEstablished, "established"},
+	{ctStateRelated, "related"},
+	{ctStateNew, "new"},
+}
+
 // xtConntrackStateFlag is XT_CONNTRACK_STATE in MatchFlags. Every other bit
 // (--ctorigdstport, --ctproto, --ctexpire and the rest) constrains something
 // whyopen does not model.
@@ -39,10 +56,14 @@ const (
 	xtAddrTypeLimitIfaceOut = 0x8
 )
 
-// xt addrtype flags, from xt_addrtype.h. Dest 0x4 is LOCAL.
-var addrTypeNames = map[uint16]string{
-	0x1: "unspec", 0x2: "unicast", 0x4: "local", 0x8: "broadcast",
-	0x10: "anycast", 0x20: "multicast",
+// xt addrtype type bits, from xt_addrtype.h. Dest 0x4 is LOCAL.
+var addrTypeNames = []bitName{
+	{0x1, "unspec"},
+	{0x2, "unicast"},
+	{0x4, "local"},
+	{0x8, "broadcast"},
+	{0x10, "anycast"},
+	{0x20, "multicast"},
 }
 
 // ConvertExprs maps netlink expressions onto whyopen's serializable union.
@@ -184,12 +205,9 @@ func conntrack(matchFlags, invertFlags, stateMask uint16) (*facts.ConntrackInfo,
 	if !ct.MatchesState {
 		return ct, decoded
 	}
-	for bit, name := range map[uint16]string{
-		ctStateInvalid: "invalid", ctStateEstablished: "established",
-		ctStateRelated: "related", ctStateNew: "new",
-	} {
-		if stateMask&bit != 0 {
-			ct.States = append(ct.States, name)
+	for _, s := range ctStateNames {
+		if stateMask&s.bit != 0 {
+			ct.States = append(ct.States, s.name)
 		}
 	}
 	return ct, decoded
@@ -197,9 +215,9 @@ func conntrack(matchFlags, invertFlags, stateMask uint16) (*facts.ConntrackInfo,
 
 func addrTypes(mask uint16) []string {
 	var out []string
-	for bit, name := range addrTypeNames {
-		if mask&bit != 0 {
-			out = append(out, name)
+	for _, t := range addrTypeNames {
+		if mask&t.bit != 0 {
+			out = append(out, t.name)
 		}
 	}
 	return out
