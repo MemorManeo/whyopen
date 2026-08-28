@@ -44,7 +44,14 @@ func ufwFilter() facts.Table {
 
 // dockerNAT publishes hostIP:port to 172.20.0.2:port via DNAT.
 func dockerNAT(hostIP string, port uint16) facts.Table {
-	hostHex := map[string]string{"0.0.0.0": "", "203.0.113.10": "cb00710a", "127.0.0.1": "7f000001"}[hostIP]
+	return dockerNATTo(hostIP, port, "172.20.0.2")
+}
+
+// dockerNATTo is dockerNAT with the DNAT rewrite target made explicit, so a
+// test can point the DNAT at an address that lands on no known interface
+// subnet.
+func dockerNATTo(hostIP string, port uint16, targetIP string) facts.Table {
+	hostHex := map[string]string{"0.0.0.0": "", "203.0.113.10": "cb00710a", "127.0.0.1": "7f000001", "192.0.2.55": "c0000237"}[hostIP]
 	exprs := []facts.Expr{}
 	if hostHex != "" {
 		exprs = append(exprs,
@@ -57,7 +64,7 @@ func dockerNAT(hostIP string, port uint16) facts.Table {
 		facts.Expr{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1,
 			Data: string([]byte{"0123456789abcdef"[port>>12&0xf], "0123456789abcdef"[port>>8&0xf], "0123456789abcdef"[port>>4&0xf], "0123456789abcdef"[port&0xf]})}},
 		facts.Expr{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "target", Name: "DNAT", Decoded: true,
-			DNAT: &facts.DNATInfo{MinIP: "172.20.0.2", MaxIP: "172.20.0.2", MinPort: port, MaxPort: port}}},
+			DNAT: &facts.DNATInfo{MinIP: targetIP, MaxIP: targetIP, MinPort: port, MaxPort: port}}},
 	)
 	return facts.Table{Family: "ip", Name: "nat", Chains: []facts.Chain{
 		{Name: "PREROUTING", Base: true, Hook: "prerouting", Priority: -100, Policy: "accept",
@@ -176,15 +183,169 @@ func TestDualStackBindProducesTwoVerdicts(t *testing.T) {
 	}
 }
 
-// With no ruleset at all for a family, the verdict must not silently claim
-// the port is closed.
+// With no global address of that family at all, the tool has no basis for
+// claiming the port is closed: an upstream forwarder (provider NAT, a home
+// router's port forward, a cloud load balancer) is invisible to it, and
+// "filtered" would be a safety claim it cannot support. It must say unknown.
 func TestNoGlobalAddressOfThatFamilyIsExplained(t *testing.T) {
 	f := hostFacts() // IPv4 only
 	f.Ruleset = facts.Ruleset{Tables: []facts.Table{ufwFilter()}}
 	f.Sockets = []facts.Socket{{Family: "ip6", Proto: "tcp", BindIP: "::1", Port: 9000}}
 
 	vs := Evaluate(f, InternetZone())
-	if len(vs) != 1 || vs[0].Result != "filtered" || vs[0].Reason == "" {
-		t.Fatalf("got %+v, want an explained filtered verdict", vs)
+	if len(vs) != 1 || vs[0].Result != "unknown" || vs[0].Reason == "" {
+		t.Fatalf("got %+v, want an explained unknown verdict", vs)
+	}
+}
+
+// A host with only private addresses (e.g. behind provider NAT) yields the
+// same unknown verdict for the same reason: no global address of the family
+// exists, so whyopen cannot see whether an upstream forwarder exposes it.
+func TestHostWithOnlyPrivateAddressesYieldsUnknown(t *testing.T) {
+	f := facts.Facts{
+		SchemaVersion: facts.SchemaVersion,
+		Host: facts.Host{
+			Hostname: "testbox",
+			Interfaces: []facts.Interface{
+				{Name: "eth0", Index: 2, Up: true, Addresses: []facts.Addr{
+					{IP: "10.0.0.5", Prefix: 24, Family: "ip", Scope: "private"},
+				}},
+			},
+			Sysctls: facts.Sysctls{IPv4Forward: true, BindV6Only: false},
+		},
+	}
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{ufwFilter()}}
+	f.Sockets = []facts.Socket{{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 22, Unit: "ssh.service"}}
+
+	vs := Evaluate(f, InternetZone())
+	if len(vs) != 1 || vs[0].Result != "unknown" || vs[0].Reason == "" {
+		t.Fatalf("got %+v, want an explained unknown verdict", vs)
+	}
+}
+
+// RULING 15: a socket bound to a secondary public address must not be
+// reported filtered just because publicAddrs happens to list a different
+// address first. It is genuinely reachable when the chain accepts.
+func TestSocketOnSecondaryAddressIsReachable(t *testing.T) {
+	f := hostFacts()
+	f.Host.Interfaces[0].Addresses = append(f.Host.Interfaces[0].Addresses,
+		facts.Addr{IP: "192.0.2.55", Prefix: 24, Family: "ip", Scope: "global"})
+	filter := ufwFilter()
+	filter.Chains[0].Rules = append(filter.Chains[0].Rules, acceptRule(13))
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter}}
+	f.Sockets = []facts.Socket{{Family: "ip", Proto: "tcp", BindIP: "192.0.2.55", Port: 8443, Unit: "svc.service"}}
+
+	vs := Evaluate(f, InternetZone())
+	if len(vs) != 1 || vs[0].Result != "reachable" {
+		t.Fatalf("got %+v, want reachable via the secondary address", vs)
+	}
+}
+
+// RULING 15: the same is true when a Docker publish's DNAT rule is written
+// against a secondary address rather than the first one whyopen happens to
+// enumerate.
+func TestPublishOnSecondaryAddressIsReachable(t *testing.T) {
+	f := hostFacts()
+	f.Host.Interfaces[0].Addresses = append(f.Host.Interfaces[0].Addresses,
+		facts.Addr{IP: "192.0.2.55", Prefix: 24, Family: "ip", Scope: "global"})
+	filter := ufwFilter()
+	filter.Chains[2].Rules = []facts.Rule{acceptRule(12)} // DOCKER accepts
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter, dockerNAT("192.0.2.55", 9090)}}
+	f.Docker = facts.Docker{Available: true, Containers: []facts.Container{{
+		ID: "c2", Name: "app",
+		Publishes: []facts.Publish{{HostIP: "192.0.2.55", HostPort: 9090,
+			ContainerIP: "172.20.0.3", ContainerPort: 9090, Proto: "tcp"}},
+	}}}
+
+	vs := Evaluate(f, InternetZone())
+	if len(vs) != 1 || vs[0].Result != "reachable" {
+		t.Fatalf("got %+v, want reachable via the secondary address", vs)
+	}
+}
+
+// RULING 16: a DNAT target that lands on no known interface subnet must not
+// silently resolve to an empty out interface: that would let an oifname
+// gated rule silently fail to match and the chain's policy decide instead,
+// which is indistinguishable from a genuine drop. It must be unknown.
+func TestDNATTargetOnNoKnownSubnetIsUnknown(t *testing.T) {
+	f := hostFacts()
+	filter := ufwFilter()
+	filter.Chains[2].Rules = []facts.Rule{acceptRule(12)}
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter, dockerNATTo("0.0.0.0", 6000, "10.99.0.5")}}
+	f.Docker = facts.Docker{Available: true, Containers: []facts.Container{{
+		ID: "c3", Name: "orphan",
+		Publishes: []facts.Publish{{HostIP: "0.0.0.0", HostPort: 6000,
+			ContainerIP: "10.99.0.5", ContainerPort: 6000, Proto: "tcp"}},
+	}}}
+
+	vs := Evaluate(f, InternetZone())
+	if len(vs) != 1 || vs[0].Result != "unknown" || vs[0].Reason == "" {
+		t.Fatalf("got %+v, want an explained unknown verdict", vs)
+	}
+}
+
+// RULING 17: endpoints() ranges a map, so ordering must be forced by a total
+// comparator, not left to depend on map iteration order. Run Evaluate many
+// times over endpoints that tie on port and family (tcp and udp, plus a
+// third bound to loopback) to catch a shuffle.
+func TestOrderingIsStableAcrossRuns(t *testing.T) {
+	f := hostFacts()
+	filter := ufwFilter()
+	filter.Chains[0].Rules = append(filter.Chains[0].Rules, acceptRule(13))
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter}}
+	f.Sockets = []facts.Socket{
+		{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 53, Unit: "dns-tcp.service"},
+		{Family: "ip", Proto: "udp", BindIP: "0.0.0.0", Port: 53, Unit: "dns-udp.service"},
+		{Family: "ip", Proto: "udp", BindIP: "127.0.0.1", Port: 53, Unit: "dns-local.service"},
+	}
+
+	var want []string
+	for i := 0; i < 200; i++ {
+		vs := Evaluate(f, InternetZone())
+		got := make([]string, len(vs))
+		for j, v := range vs {
+			got[j] = v.Family + "/" + v.Endpoint.Proto + "/" + v.Endpoint.BindIP
+		}
+		if want == nil {
+			want = got
+			continue
+		}
+		if len(got) != len(want) {
+			t.Fatalf("run %d: got %d verdicts, want %d: %v", i, len(got), len(want), got)
+		}
+		for j := range got {
+			if got[j] != want[j] {
+				t.Fatalf("run %d: ordering changed: got %v, want %v", i, got, want)
+			}
+		}
+	}
+}
+
+// RULING 18: bind_v6_only governs a listening socket's API, not how a nat
+// rule matches a destination address. Docker's default "-p 8080:80" shape
+// emits two publishes, one for 0.0.0.0 and one for ::; the :: one must not
+// be expanded across both families, or the IPv4 exposure is reported twice.
+func TestDockerDefaultDualEntryPublishYieldsOneIPv4Verdict(t *testing.T) {
+	f := hostFacts()
+	filter := ufwFilter()
+	filter.Chains[2].Rules = []facts.Rule{acceptRule(12)}
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter, dockerNAT("0.0.0.0", 8080)}}
+	f.Docker = facts.Docker{Available: true, Containers: []facts.Container{{
+		ID: "c4", Name: "web",
+		Publishes: []facts.Publish{
+			{HostIP: "0.0.0.0", HostPort: 8080, ContainerIP: "172.20.0.2", ContainerPort: 80, Proto: "tcp"},
+			{HostIP: "::", HostPort: 8080, ContainerIP: "172.20.0.2", ContainerPort: 80, Proto: "tcp"},
+		},
+	}}}
+
+	vs := Evaluate(f, InternetZone())
+	var ipCount int
+	for _, v := range vs {
+		if v.Family == "ip" {
+			ipCount++
+		}
+	}
+	if ipCount != 1 {
+		t.Fatalf("got %d ip verdicts, want exactly 1: %+v", ipCount, vs)
 	}
 }

@@ -56,10 +56,20 @@ func Evaluate(f facts.Facts, zone Zone) []Verdict {
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Endpoint.Port != out[j].Endpoint.Port {
-			return out[i].Endpoint.Port < out[j].Endpoint.Port
+		a, b := out[i], out[j]
+		if a.Endpoint.Port != b.Endpoint.Port {
+			return a.Endpoint.Port < b.Endpoint.Port
 		}
-		return out[i].Family < out[j].Family
+		if a.Family != b.Family {
+			return a.Family < b.Family
+		}
+		if a.Endpoint.Proto != b.Endpoint.Proto {
+			return a.Endpoint.Proto < b.Endpoint.Proto
+		}
+		if a.Endpoint.BindIP != b.Endpoint.BindIP {
+			return a.Endpoint.BindIP < b.Endpoint.BindIP
+		}
+		return a.Endpoint.Kind < b.Endpoint.Kind
 	})
 	return out
 }
@@ -109,23 +119,75 @@ func socketOwner(s facts.Socket) string {
 }
 
 // familiesFor expands the dual-stack case: a :: bind with bind_v6_only=0
-// also accepts IPv4, so one socket gets two independent verdicts.
+// also accepts IPv4, so one socket gets two independent verdicts. This is a
+// property of the socket API only: bind_v6_only governs how the kernel binds
+// a listening socket, not how a nat rule matches a destination address, so it
+// must never apply to a Docker publish. Docker's default "-p 8080:80" emits
+// two separate publishes, one for 0.0.0.0 and one for ::; expanding the ::
+// entry here would report the same IPv4 exposure as reachable twice.
 func familiesFor(e Endpoint, sc facts.Sysctls) []string {
-	if e.Family == "ip6" && (e.BindIP == "::" || e.BindIP == "[::]") && !sc.BindV6Only {
+	if e.Kind == "socket" && e.Family == "ip6" && (e.BindIP == "::" || e.BindIP == "[::]") && !sc.BindV6Only {
 		return []string{"ip", "ip6"}
 	}
 	return []string{e.Family}
 }
 
+// pubAddr is one destination the internet can send a packet to: a global
+// unicast address together with the interface it lives on.
+type pubAddr struct {
+	IP    netip.Addr
+	Iface string
+}
+
 func evaluateOne(f facts.Facts, zone Zone, ep Endpoint, family string) Verdict {
 	v := Verdict{Endpoint: ep, Family: family}
 
-	dst, iface, ok := publicAddr(f, family)
-	if !ok {
-		v.Result = "filtered"
-		v.Reason = fmt.Sprintf("the host has no global unicast %s address, so no packet from the internet can arrive over %s", family, family)
+	candidates := publicAddrs(f, family)
+	if len(candidates) == 0 {
+		v.Result = "unknown"
+		v.Reason = fmt.Sprintf("the host has no global unicast %s address, so the internet cannot reach it directly here; any exposure would come from an upstream forwarder (a router, cloud load balancer, or provider NAT) that whyopen cannot see", family)
 		return v
 	}
+
+	var results []Verdict
+	for _, c := range candidates {
+		if !bindCovers(ep.BindIP, c.IP) {
+			continue
+		}
+		results = append(results, evaluateAtDestination(f, zone, ep, family, c))
+	}
+	if len(results) == 0 {
+		v.Result = "filtered"
+		v.Reason = fmt.Sprintf("bound to %s, which does not match any host address the internet can reach", ep.BindIP)
+		return v
+	}
+
+	// Strongest result wins: an endpoint reachable through any one of the
+	// host's public addresses is reachable, full stop. Candidates are
+	// produced in a fixed order (interface list, then address list), so
+	// picking the first strict improvement keeps the choice deterministic.
+	best := results[0]
+	for _, r := range results[1:] {
+		if resultRank(r.Result) > resultRank(best.Result) {
+			best = r
+		}
+	}
+	return best
+}
+
+func resultRank(r string) int {
+	switch r {
+	case "reachable":
+		return 2
+	case "unknown":
+		return 1
+	default: // filtered
+		return 0
+	}
+}
+
+func evaluateAtDestination(f facts.Facts, zone Zone, ep Endpoint, family string, c pubAddr) Verdict {
+	v := Verdict{Endpoint: ep, Family: family}
 
 	src := zone.Src4
 	if family == "ip6" {
@@ -133,9 +195,9 @@ func evaluateOne(f facts.Facts, zone Zone, ep Endpoint, family string) Verdict {
 	}
 	pkt := &Packet{
 		Family: family, Proto: ep.Proto,
-		Src: src, Dst: dst,
+		Src: src, Dst: c.IP,
 		SrcPort: 41234, DstPort: ep.Port,
-		InIface: iface, CtState: "new", DstIsLocal: true,
+		InIface: c.Iface, CtState: "new", DstIsLocal: true,
 	}
 
 	pre, hits := Traverse(f.Ruleset, family, "prerouting", pkt)
@@ -154,28 +216,29 @@ func evaluateOne(f facts.Facts, zone Zone, ep Endpoint, family string) Verdict {
 		pkt.Dst = pre.DNAT.IP
 		pkt.DstPort = pre.DNAT.Port
 		pkt.DstIsLocal = isLocal(f, pre.DNAT.IP)
-		pkt.OutIface = ifaceFor(f, pre.DNAT.IP)
 
 		hook := "forward"
 		if pkt.DstIsLocal {
 			hook = "input"
+		} else {
+			outIface, ok := ifaceFor(f, pre.DNAT.IP)
+			if !ok {
+				v.Result = "unknown"
+				v.Reason = fmt.Sprintf("DNAT target %s is not on any known interface subnet, so the forward path cannot be resolved", pre.DNAT.IP)
+				return v
+			}
+			pkt.OutIface = outIface
 		}
 		res, hits := Traverse(f.Ruleset, family, hook, pkt)
 		v.Path = append(v.Path, hits...)
-		return finish(v, res, fmt.Sprintf("DNAT to %s:%d, then the %s hook", pre.DNAT.IP, pre.DNAT.Port, hook))
+		return finish(v, res, fmt.Sprintf("via %s: DNAT to %s:%d, then the %s hook", c.IP, pre.DNAT.IP, pre.DNAT.Port, hook))
 	}
 
-	// No DNAT: the packet is delivered locally, so this endpoint only
-	// receives it if its bind address covers the destination.
-	if !bindCovers(ep.BindIP, dst) {
-		v.Result = "filtered"
-		v.Reason = fmt.Sprintf("bound to %s, which is not an address a packet from the internet can be sent to (the internet reaches %s)", ep.BindIP, dst)
-		return v
-	}
-
+	// No DNAT: the packet is delivered locally. The caller already
+	// established that ep's bind address covers c.IP.
 	res, hits := Traverse(f.Ruleset, family, "input", pkt)
 	v.Path = append(v.Path, hits...)
-	return finish(v, res, "delivered locally, so the input hook decides")
+	return finish(v, res, fmt.Sprintf("via %s: delivered locally, so the input hook decides", c.IP))
 }
 
 func finish(v Verdict, res Result, how string) Verdict {
@@ -206,9 +269,13 @@ func bindCovers(bindIP string, dst netip.Addr) bool {
 	return ip == dst || ip.Unmap() == dst.Unmap()
 }
 
-// publicAddr returns the first global unicast address of the family on an up
-// interface, with that interface's name.
-func publicAddr(f facts.Facts, family string) (netip.Addr, string, bool) {
+// publicAddrs returns every global unicast address of the family on an up
+// interface, each paired with that interface's name. A multi-homed host can
+// have more than one, and an endpoint bound to a secondary address is only
+// reachable through that address, not through whichever one happens to be
+// listed first.
+func publicAddrs(f facts.Facts, family string) []pubAddr {
+	var out []pubAddr
 	for _, i := range f.Host.Interfaces {
 		if !i.Up {
 			continue
@@ -218,15 +285,18 @@ func publicAddr(f facts.Facts, family string) (netip.Addr, string, bool) {
 				continue
 			}
 			if ip, err := netip.ParseAddr(a.IP); err == nil {
-				return ip, i.Name, true
+				out = append(out, pubAddr{IP: ip, Iface: i.Name})
 			}
 		}
 	}
-	return netip.Addr{}, "", false
+	return out
 }
 
 func isLocal(f facts.Facts, ip netip.Addr) bool {
 	for _, i := range f.Host.Interfaces {
+		if !i.Up {
+			continue
+		}
 		for _, a := range i.Addresses {
 			if got, err := netip.ParseAddr(a.IP); err == nil && got == ip {
 				return true
@@ -237,9 +307,17 @@ func isLocal(f facts.Facts, ip netip.Addr) bool {
 }
 
 // ifaceFor finds the interface whose subnet contains ip, which is how the
-// DOCKER chain's oifname matches are resolved.
-func ifaceFor(f facts.Facts, ip netip.Addr) string {
+// DOCKER chain's oifname matches are resolved. The second return reports
+// whether a subnet was found at all: a DNAT target that lands on no known
+// interface is not a fact whyopen can silently paper over as "no interface",
+// because a rule gated on oifname would then simply fail to match and the
+// chain's policy would decide, which is indistinguishable from a genuine
+// drop.
+func ifaceFor(f facts.Facts, ip netip.Addr) (string, bool) {
 	for _, i := range f.Host.Interfaces {
+		if !i.Up {
+			continue
+		}
 		for _, a := range i.Addresses {
 			base, err := netip.ParseAddr(a.IP)
 			if err != nil {
@@ -247,9 +325,9 @@ func ifaceFor(f facts.Facts, ip netip.Addr) string {
 			}
 			pfx := netip.PrefixFrom(base, a.Prefix)
 			if pfx.Contains(ip) {
-				return i.Name
+				return i.Name, true
 			}
 		}
 	}
-	return ""
+	return "", false
 }
