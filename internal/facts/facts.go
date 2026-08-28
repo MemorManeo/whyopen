@@ -196,9 +196,10 @@ type ConntrackInfo struct {
 }
 
 type AddrTypeInfo struct {
-	DestTypes   []string `json:"dest_types,omitempty"` // local | unicast | broadcast | ...
-	SourceTypes []string `json:"source_types,omitempty"`
-	InvertDest  bool     `json:"invert_dest"`
+	DestTypes    []string `json:"dest_types,omitempty"` // local | unicast | broadcast | ...
+	SourceTypes  []string `json:"source_types,omitempty"`
+	InvertDest   bool     `json:"invert_dest"`
+	InvertSource bool     `json:"invert_source"`
 }
 
 type Docker struct {

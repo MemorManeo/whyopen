@@ -23,8 +23,21 @@ const (
 	ctStateNew         = 0x8
 )
 
-// xtConntrackStateFlag is XT_CONNTRACK_STATE in MatchFlags.
+// xtConntrackStateFlag is XT_CONNTRACK_STATE in MatchFlags. Every other bit
+// (--ctorigdstport, --ctproto, --ctexpire and the rest) constrains something
+// whyopen does not model.
 const xtConntrackStateFlag = 0x1
+
+// xt addrtype flags, from the Flags field of the rev 1 struct in
+// xt_addrtype.h. The two LIMIT_IFACE bits scope the match to the packet's
+// in or out interface, which whyopen's address-role model does not
+// represent.
+const (
+	xtAddrTypeInvertSource  = 0x1
+	xtAddrTypeInvertDest    = 0x2
+	xtAddrTypeLimitIfaceIn  = 0x4
+	xtAddrTypeLimitIfaceOut = 0x8
+)
 
 // xt addrtype flags, from xt_addrtype.h. Dest 0x4 is LOCAL.
 var addrTypeNames = map[uint16]string{
@@ -110,26 +123,32 @@ func convertXt(kind, name string, rev uint32, info xt.InfoAny) *facts.XtExpr {
 		x.Decoded = true
 		x.DNAT = natRange(*i)
 	case *xt.ConntrackMtinfo3:
-		x.Decoded = true
-		x.Conntrack = conntrack(i.MatchFlags, i.InvertFlags, uint16(i.StateMask))
+		x.Conntrack, x.Decoded = conntrack(i.MatchFlags, i.InvertFlags, uint16(i.StateMask))
 	case *xt.ConntrackMtinfo2:
-		x.Decoded = true
-		x.Conntrack = conntrack(i.MatchFlags, i.InvertFlags, uint16(i.StateMask))
+		x.Conntrack, x.Decoded = conntrack(i.MatchFlags, i.InvertFlags, uint16(i.StateMask))
 	case *xt.ConntrackMtinfo1:
-		x.Decoded = true
-		x.Conntrack = conntrack(i.MatchFlags, i.InvertFlags, uint16(i.StateMask))
+		x.Conntrack, x.Decoded = conntrack(i.MatchFlags, i.InvertFlags, uint16(i.StateMask))
 	case *xt.AddrTypeV1:
-		x.Decoded = true
+		flags := uint32(i.Flags)
+		// Rev 1 carries the inverts in Flags rather than in their own
+		// fields, and it is the revision iptables-nft actually emits (see
+		// docs/decisions/0001-nftables-ruleset-source.md), so ignoring
+		// them evaluated an inverted rule with inverted semantics at full
+		// confidence.
+		x.Decoded = flags&(xtAddrTypeLimitIfaceIn|xtAddrTypeLimitIfaceOut) == 0
 		x.AddrType = &facts.AddrTypeInfo{
-			DestTypes:   addrTypes(i.Dest),
-			SourceTypes: addrTypes(i.Source),
+			DestTypes:    addrTypes(i.Dest),
+			SourceTypes:  addrTypes(i.Source),
+			InvertDest:   flags&xtAddrTypeInvertDest != 0,
+			InvertSource: flags&xtAddrTypeInvertSource != 0,
 		}
 	case *xt.AddrType:
 		x.Decoded = true
 		x.AddrType = &facts.AddrTypeInfo{
-			DestTypes:   addrTypes(i.Dest),
-			SourceTypes: addrTypes(i.Source),
-			InvertDest:  i.InvertDest,
+			DestTypes:    addrTypes(i.Dest),
+			SourceTypes:  addrTypes(i.Source),
+			InvertDest:   i.InvertDest,
+			InvertSource: i.InvertSource,
 		}
 	}
 	return x
@@ -151,13 +170,19 @@ func ipString(ip net.IP) string {
 	return ip.String()
 }
 
-func conntrack(matchFlags, invertFlags, stateMask uint16) *facts.ConntrackInfo {
+// conntrack decodes an xt conntrack payload and reports whether it decoded
+// all of it. whyopen models the state bits and nothing else, so a match that
+// also constrains --ctorigdstport, --ctproto or --ctexpire is only partly
+// read; reporting it as decoded would let the evaluator resolve the rule on
+// state alone and silently discard the rest of the condition.
+func conntrack(matchFlags, invertFlags, stateMask uint16) (*facts.ConntrackInfo, bool) {
 	ct := &facts.ConntrackInfo{
 		MatchesState: matchFlags&xtConntrackStateFlag != 0,
 		Invert:       invertFlags&xtConntrackStateFlag != 0,
 	}
+	decoded := matchFlags&^uint16(xtConntrackStateFlag) == 0
 	if !ct.MatchesState {
-		return ct
+		return ct, decoded
 	}
 	for bit, name := range map[uint16]string{
 		ctStateInvalid: "invalid", ctStateEstablished: "established",
@@ -167,7 +192,7 @@ func conntrack(matchFlags, invertFlags, stateMask uint16) *facts.ConntrackInfo {
 			ct.States = append(ct.States, name)
 		}
 	}
-	return ct
+	return ct, decoded
 }
 
 func addrTypes(mask uint16) []string {

@@ -215,3 +215,47 @@ func TestDNATTargetAction(t *testing.T) {
 		t.Fatalf("out=%v act=%+v, want a dnat action", out, act)
 	}
 }
+
+// I2: an inverted dest-type match is the opposite of the plain one.
+// UFW's ufw-not-local uses "! --dst-type LOCAL" to drop traffic aimed at
+// addresses this host does not own.
+func TestAddrTypeInvertedDest(t *testing.T) {
+	rule := facts.Rule{Handle: 14, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "addrtype", Decoded: true,
+			AddrType: &facts.AddrTypeInfo{DestTypes: []string{"local"}, InvertDest: true}}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "drop"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeNoMatch {
+		t.Fatalf("want no match: the destination is local and the match is inverted")
+	}
+	p := testPacket()
+	p.DstIsLocal = false
+	if out, act := MatchRule(p, rule); out != OutcomeMatch || act.Kind != "drop" {
+		t.Fatalf("out=%v act=%+v, want match/drop: a non-local destination satisfies the inverted match", out, act)
+	}
+}
+
+// The same for the source half.
+func TestAddrTypeInvertedSource(t *testing.T) {
+	rule := facts.Rule{Handle: 15, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "addrtype", Decoded: true,
+			AddrType: &facts.AddrTypeInfo{SourceTypes: []string{"unicast"}, InvertSource: true}}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "drop"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeNoMatch {
+		t.Fatalf("want no match: the source is unicast and the match is inverted")
+	}
+}
+
+// A conntrack match the collector could only partly decode must not be
+// resolved on its state bits alone.
+func TestConntrackNotFullyDecodedIsUnknown(t *testing.T) {
+	rule := facts.Rule{Handle: 16, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "conntrack", Decoded: false,
+			Conntrack: &facts.ConntrackInfo{MatchesState: true, States: []string{"new"}}}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeUnknown {
+		t.Fatalf("want unknown: the match constrains something whyopen did not decode")
+	}
+}

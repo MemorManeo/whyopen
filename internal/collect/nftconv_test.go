@@ -139,3 +139,56 @@ func TestConvertRejectIsATerminalVerdict(t *testing.T) {
 		t.Fatalf("reject verdict kind = %q, want reject", got[0].Verdict.Kind)
 	}
 }
+
+// I2: rev 1 keeps the inverts in Flags, and rev 1 is what iptables-nft
+// emits on the reference host, so match.go's InvertDest handling was dead
+// against real data: "! --dst-type LOCAL" was read as "--dst-type LOCAL".
+func TestConvertAddrTypeV1Inverts(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Match{Name: "addrtype", Rev: 1, Info: &xt.AddrTypeV1{Dest: 0x4, Flags: 0x2}},
+	})
+	at := got[0].Xt.AddrType
+	if !got[0].Xt.Decoded || at == nil {
+		t.Fatalf("addrtype = %+v, want a decoded payload", got[0].Xt)
+	}
+	if !at.InvertDest || at.InvertSource {
+		t.Fatalf("inverts = dest %v source %v, want dest inverted only", at.InvertDest, at.InvertSource)
+	}
+
+	got = ConvertExprs([]expr.Any{
+		&expr.Match{Name: "addrtype", Rev: 1, Info: &xt.AddrTypeV1{Source: 0x4, Flags: 0x1}},
+	})
+	if at = got[0].Xt.AddrType; !at.InvertSource || at.InvertDest {
+		t.Fatalf("inverts = dest %v source %v, want source inverted only", at.InvertDest, at.InvertSource)
+	}
+}
+
+// LIMIT_IFACE_IN/OUT scopes the match to an interface, which whyopen's
+// address-role model does not represent. Decoding the type names and
+// discarding that constraint would resolve the rule on a partial reading.
+func TestConvertAddrTypeIfaceLimitIsNotFullyDecoded(t *testing.T) {
+	for _, flags := range []xt.AddrTypeFlags{0x4, 0x8} {
+		got := ConvertExprs([]expr.Any{
+			&expr.Match{Name: "addrtype", Rev: 1, Info: &xt.AddrTypeV1{Dest: 0x4, Flags: flags}},
+		})
+		if got[0].Xt.Decoded {
+			t.Fatalf("flags 0x%x reported as decoded, want undecoded: the iface limit is not modelled", flags)
+		}
+	}
+}
+
+// I2: conntrack reported Decoded true while carrying only the state bits.
+// A match that also constrains --ctorigdstport was then resolved on state
+// alone, silently discarding half the condition.
+func TestConvertConntrackWithExtraMatchFlagIsNotFullyDecoded(t *testing.T) {
+	info := &xt.ConntrackMtinfo3{}
+	info.MatchFlags = 0x1 | 0x10 // XT_CONNTRACK_STATE plus XT_CONNTRACK_ORIGDST
+	info.StateMask = 0x8
+	got := ConvertExprs([]expr.Any{&expr.Match{Name: "conntrack", Rev: 3, Info: info}})
+	if got[0].Xt.Decoded {
+		t.Fatalf("conntrack with an unmodelled match flag reported as decoded: %+v", got[0].Xt)
+	}
+	if ct := got[0].Xt.Conntrack; ct == nil || !ct.MatchesState {
+		t.Fatalf("the state half must still be recorded for diagnosis: %+v", got[0].Xt)
+	}
+}

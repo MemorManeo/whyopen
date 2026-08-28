@@ -261,6 +261,9 @@ func xtExpr(pkt *Packet, x *facts.XtExpr) (Outcome, Action, bool) {
 		srcHit := true
 		if len(src) > 0 {
 			srcHit = slices.Contains(src, srcRole)
+			if x.AddrType.InvertSource {
+				srcHit = !srcHit
+			}
 		}
 		if dstHit && srcHit {
 			return OutcomeMatch, none, true
