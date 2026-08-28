@@ -5,8 +5,8 @@ package collect
 import (
 	"fmt"
 
-	"github.com/google/nftables"
 	"github.com/MemorManeo/whyopen/internal/facts"
+	"github.com/google/nftables"
 )
 
 // Ruleset reads the full nftables ruleset over netlink. It is strictly
@@ -15,11 +15,10 @@ import (
 func Ruleset() (facts.Ruleset, []facts.Warning, error) {
 	var warns []facts.Warning
 
-	c, err := nftables.New(nftables.AsLasting())
+	c, err := nftables.New()
 	if err != nil {
 		return facts.Ruleset{}, warns, fmt.Errorf("open netlink: %w", err)
 	}
-	defer c.CloseLasting()
 
 	tables, err := c.ListTables()
 	if err != nil {
