@@ -24,7 +24,19 @@ type Hit struct {
 	Rule     facts.Rule `json:"-"`
 }
 
-// Result is the outcome of one hook.
+// knownHooks are the five netfilter hooks whyopen can place a base chain on.
+// A base chain named with anything else cannot be assigned to a hook, and a
+// hook walked without it is an incomplete walk.
+var knownHooks = map[string]bool{
+	"prerouting": true, "input": true, "forward": true,
+	"output": true, "postrouting": true,
+}
+
+// Result is the outcome of one hook: accept, drop or unknown. walkChain uses
+// two further kinds internally, neither of which can escape a base chain:
+// "none" for a regular chain that fell through, and "unwind" for a goto that
+// fell through, which resumes at the base chain's policy rather than in any
+// calling chain.
 type Result struct {
 	Kind   string // accept | drop | unknown
 	Reason string
@@ -45,7 +57,18 @@ func Traverse(rs facts.Ruleset, family, hook string, pkt *Packet) (Result, []Hit
 			continue
 		}
 		for _, ch := range t.Chains {
-			if ch.Base && ch.Hook == hook {
+			if !ch.Base {
+				continue
+			}
+			if !knownHooks[ch.Hook] {
+				// The chain is registered on some hook, and whyopen cannot
+				// tell which. Leaving it out of the walk would produce a
+				// confident verdict from a hook it had only partly seen.
+				return Result{Kind: "unknown", Reason: "base chain " + t.Name + "/" + ch.Name +
+					" is registered on a hook whyopen does not recognise (" + strconv.Quote(ch.Hook) +
+					"), so no hook can be walked completely"}, nil
+			}
+			if ch.Hook == hook {
 				bases = append(bases, baseChain{table: t.Name, chain: ch})
 			}
 		}
@@ -106,19 +129,41 @@ func (w *walker) findChain(table, name string) (facts.Chain, bool) {
 }
 
 // basePolicyResult resolves what a base chain does once nothing earlier has
-// already decided the verdict: a drop policy drops, anything else accepts.
-// In real nftables this is what happens both when a chain's rules run out
-// (natural fallthrough) and when a rule inside it issues an explicit
-// return, so both callers share this.
-func basePolicyResult(table string, ch facts.Chain, reason string) Result {
-	if ch.Policy == "drop" {
+// already decided the verdict. In real nftables this is what happens when a
+// chain's rules run out (natural fallthrough), when a rule inside it issues
+// an explicit return, and when a goto below it falls through, so all three
+// callers share this. reason describes which of the three happened, and is
+// used only for a drop.
+func basePolicyResult(ch facts.Chain, reason string) Result {
+	switch ch.Policy {
+	case "accept":
+		return Result{Kind: "accept"}
+	case "drop":
 		return Result{Kind: "drop", Reason: reason}
 	}
-	return Result{Kind: "accept"}
+	// nftables has no third base chain policy, so this is a policy whyopen
+	// failed to read rather than one it can apply. Treating it as accept,
+	// which the old "anything that is not drop" test did, reports the chain
+	// as open on no evidence at all.
+	return Result{Kind: "unknown", Reason: "base chain " + ch.Name + " has policy " + strconv.Quote(ch.Policy) +
+		", which is neither accept nor drop, so whyopen cannot say what happens to a packet that reaches the end of it"}
 }
 
-// walkChain returns accept, drop, unknown, or none for a chain that fell
-// through without a verdict.
+// unwind carries a goto's fallthrough up to the base chain that owns the
+// hook. A goto does not return to the chain that issued it, so no caller
+// resumes and the packet lands on the base chain's policy. Resuming in the
+// calling chain instead under-reported exposure, which is the one direction
+// this tool must not fail in.
+func (w *walker) unwind(table string, ch facts.Chain) Result {
+	if !ch.Base {
+		return Result{Kind: "unwind"}
+	}
+	return basePolicyResult(ch, "a goto fell through to the drop policy of "+table+"/"+ch.Name)
+}
+
+// walkChain returns accept, drop or unknown, "none" for a regular chain that
+// fell through without a verdict, or "unwind" for a goto that fell through,
+// which must not resume in any caller and is resolved at the base chain.
 func (w *walker) walkChain(table string, ch facts.Chain, depth int) Result {
 	if depth > maxJumpDepth {
 		return Result{Kind: "unknown", Reason: "chain nesting exceeded " + itoa(maxJumpDepth) + ", the ruleset may contain a jump loop"}
@@ -156,7 +201,7 @@ func (w *walker) walkChain(table string, ch facts.Chain, depth int) Result {
 			if ch.Base {
 				// In a base chain, return is equivalent to falling off the
 				// end of it: the chain's policy applies.
-				return basePolicyResult(table, ch, "return hit the drop policy of "+table+"/"+ch.Name)
+				return basePolicyResult(ch, "return hit the drop policy of "+table+"/"+ch.Name)
 			}
 			return Result{Kind: "none"}
 		case "jump":
@@ -165,6 +210,12 @@ func (w *walker) walkChain(table string, ch facts.Chain, depth int) Result {
 				return Result{Kind: "unknown", Reason: "jump to unknown chain " + act.Chain}
 			}
 			sub := w.walkChain(table, target, depth+1)
+			if sub.Kind == "unwind" {
+				// A goto below this jump fell through. A goto never returns
+				// to its own caller, and that is transitive: this chain does
+				// not resume either.
+				return w.unwind(table, ch)
+			}
 			if sub.Kind != "none" {
 				return sub
 			}
@@ -175,11 +226,13 @@ func (w *walker) walkChain(table string, ch facts.Chain, depth int) Result {
 				return Result{Kind: "unknown", Reason: "goto unknown chain " + act.Chain}
 			}
 			sub := w.walkChain(table, target, depth+1)
-			if sub.Kind != "none" {
-				return sub
+			if sub.Kind == "none" || sub.Kind == "unwind" {
+				// goto never returns to the caller: when the target chain
+				// falls through, traversal continues at the base chain's
+				// policy, not at the rule after the goto.
+				return w.unwind(table, ch)
 			}
-			// goto does not return to the caller.
-			return Result{Kind: "none"}
+			return sub
 		case "continue", "none":
 			// Next rule.
 		default:
@@ -188,7 +241,7 @@ func (w *walker) walkChain(table string, ch facts.Chain, depth int) Result {
 	}
 
 	if ch.Base {
-		return basePolicyResult(table, ch, "fell through to the drop policy of "+table+"/"+ch.Name)
+		return basePolicyResult(ch, "fell through to the drop policy of "+table+"/"+ch.Name)
 	}
 	return Result{Kind: "none"}
 }

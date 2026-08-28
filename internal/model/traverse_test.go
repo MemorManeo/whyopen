@@ -242,3 +242,126 @@ func TestNativeRejectIsTerminal(t *testing.T) {
 		t.Fatalf("hits = %d, want the reject to be terminal: %+v", len(hits), hits)
 	}
 }
+
+func gotoRule(handle uint64, chain string) facts.Rule {
+	return facts.Rule{Handle: handle, Exprs: []facts.Expr{
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "goto", Chain: chain}}}}
+}
+
+// I4: a goto in a base chain whose target falls through used to return
+// Kind "none", which Traverse turned into an unknown blaming an internal
+// string. nftables applies the base chain's policy there.
+func TestGotoFallthroughAppliesTheBasePolicy(t *testing.T) {
+	rs := func(policy string) facts.Ruleset {
+		return facts.Ruleset{Tables: []facts.Table{
+			{Family: "ip", Name: "filter", Chains: []facts.Chain{
+				{Name: "INPUT", Base: true, Hook: "input", Priority: 0, Policy: policy,
+					Rules: []facts.Rule{gotoRule(1, "ufw-user-input")}},
+				{Name: "ufw-user-input"},
+			}},
+		}}
+	}
+	if res, _ := Traverse(rs("drop"), "ip", "input", testPacket()); res.Kind != "drop" {
+		t.Fatalf("result = %q, want the drop policy to apply after a goto fell through", res.Kind)
+	}
+	if res, _ := Traverse(rs("accept"), "ip", "input", testPacket()); res.Kind != "accept" {
+		t.Fatalf("result = %q, want the accept policy to apply after a goto fell through", res.Kind)
+	}
+}
+
+// I4, the direction that matters: a goto nested under a jump must not
+// resume in the calling chain. Base policy accept, "jump mid", mid does
+// "goto sub", sub is empty, and the base chain has a later drop rule.
+// nftables applies the accept policy; returning to the base chain and
+// hitting the drop under-reported exposure.
+func TestGotoUnderAJumpDoesNotReturnToTheCaller(t *testing.T) {
+	rs := facts.Ruleset{Tables: []facts.Table{
+		{Family: "ip", Name: "filter", Chains: []facts.Chain{
+			{Name: "INPUT", Base: true, Hook: "input", Priority: 0, Policy: "accept",
+				Rules: []facts.Rule{jumpRule(1, "mid"), dropRule(2)}},
+			{Name: "mid", Rules: []facts.Rule{gotoRule(3, "sub")}},
+			{Name: "sub"},
+		}},
+	}}
+	res, hits := Traverse(rs, "ip", "input", testPacket())
+	if res.Kind != "accept" {
+		t.Fatalf("result = %q (%s), want accept: a goto never returns, so the base policy decides", res.Kind, res.Reason)
+	}
+	for _, h := range hits {
+		if h.Handle == 2 {
+			t.Fatalf("the rule after the jump must not run once a goto has left the chain: %+v", hits)
+		}
+	}
+}
+
+// The same shape with a drop policy: the unwind must reach the base chain's
+// policy, not stop at the chain that issued the jump.
+func TestGotoUnderAJumpUnwindsToTheBasePolicy(t *testing.T) {
+	rs := facts.Ruleset{Tables: []facts.Table{
+		{Family: "ip", Name: "filter", Chains: []facts.Chain{
+			{Name: "INPUT", Base: true, Hook: "input", Priority: 0, Policy: "drop",
+				Rules: []facts.Rule{jumpRule(1, "mid"), acceptRule(2)}},
+			{Name: "mid", Rules: []facts.Rule{gotoRule(3, "sub")}},
+			{Name: "sub"},
+		}},
+	}}
+	if res, _ := Traverse(rs, "ip", "input", testPacket()); res.Kind != "drop" {
+		t.Fatalf("result = %q, want the base chain's drop policy", res.Kind)
+	}
+}
+
+// A verdict inside the goto target still decides, exactly as a jump's does.
+func TestGotoTargetVerdictDecides(t *testing.T) {
+	rs := facts.Ruleset{Tables: []facts.Table{
+		{Family: "ip", Name: "filter", Chains: []facts.Chain{
+			{Name: "INPUT", Base: true, Hook: "input", Priority: 0, Policy: "accept",
+				Rules: []facts.Rule{gotoRule(1, "sub"), acceptRule(2)}},
+			{Name: "sub", Rules: []facts.Rule{dropRule(3)}},
+		}},
+	}}
+	if res, _ := Traverse(rs, "ip", "input", testPacket()); res.Kind != "drop" {
+		t.Fatalf("result = %q, want the goto target's drop", res.Kind)
+	}
+}
+
+func TestGotoUnknownChainIsUnknown(t *testing.T) {
+	rs := facts.Ruleset{Tables: []facts.Table{
+		{Family: "ip", Name: "filter", Chains: []facts.Chain{
+			{Name: "INPUT", Base: true, Hook: "input", Priority: 0, Policy: "accept",
+				Rules: []facts.Rule{gotoRule(1, "absent")}},
+		}},
+	}}
+	if res, _ := Traverse(rs, "ip", "input", testPacket()); res.Kind != "unknown" {
+		t.Fatalf("result = %q, want unknown for a goto to a chain that is not in the snapshot", res.Kind)
+	}
+}
+
+// Ledger minor: a base chain policy that is neither accept nor drop used to
+// be treated as accept, reporting the chain as open on no evidence.
+func TestUnmodelledBasePolicyIsUnknown(t *testing.T) {
+	rs := facts.Ruleset{Tables: []facts.Table{
+		{Family: "ip", Name: "filter", Chains: []facts.Chain{{
+			Name: "INPUT", Base: true, Hook: "input", Priority: 0, Policy: "unknown",
+		}}},
+	}}
+	res, _ := Traverse(rs, "ip", "input", testPacket())
+	if res.Kind != "unknown" || res.Reason == "" {
+		t.Fatalf("result = %+v, want an explained unknown", res)
+	}
+}
+
+// Ledger minor: a base chain whose hook whyopen could not name was silently
+// left out of the walk, so the hook was scored as though the chain did not
+// exist.
+func TestBaseChainOnAnUnrecognisedHookIsNotSilentlySkipped(t *testing.T) {
+	rs := facts.Ruleset{Tables: []facts.Table{
+		{Family: "ip", Name: "filter", Chains: []facts.Chain{
+			{Name: "INPUT", Base: true, Hook: "input", Priority: 0, Policy: "accept"},
+			{Name: "mystery", Base: true, Hook: "unknown", Priority: 0, Policy: "drop"},
+		}},
+	}}
+	res, _ := Traverse(rs, "ip", "input", testPacket())
+	if res.Kind != "unknown" || res.Reason == "" {
+		t.Fatalf("result = %+v, want an explained unknown rather than a walk that omits the chain", res)
+	}
+}
