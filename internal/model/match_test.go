@@ -86,6 +86,92 @@ func TestAddrTypeLocal(t *testing.T) {
 	}
 }
 
+// The addrtype dest field is a bitmask: dst-type multicast can never match
+// the synthetic packet, whose destination is always local or unicast. This
+// is the case that would poison a real host if resolution were guarded to
+// only DestTypes == ["local"], since Docker/ufw rulesets carry addrtype
+// rules for multicast and broadcast on the input path.
+func TestAddrTypeMulticastNoMatch(t *testing.T) {
+	rule := facts.Rule{Handle: 8, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "addrtype", Decoded: true,
+			AddrType: &facts.AddrTypeInfo{DestTypes: []string{"multicast"}}}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeNoMatch {
+		t.Fatalf("want no match: the packet's destination is never multicast")
+	}
+}
+
+// DestTypes is an OR-ed set: ["local","unicast"] matches whichever role the
+// destination actually has.
+func TestAddrTypeDestUnionMatchesEither(t *testing.T) {
+	rule := facts.Rule{Handle: 9, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "addrtype", Decoded: true,
+			AddrType: &facts.AddrTypeInfo{DestTypes: []string{"local", "unicast"}}}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeMatch {
+		t.Fatalf("want match when the destination is local")
+	}
+	p := testPacket()
+	p.DstIsLocal = false
+	if out, _ := MatchRule(p, rule); out != OutcomeMatch {
+		t.Fatalf("want match when the destination is unicast too")
+	}
+}
+
+// SourceTypes constrains the source role independently of DestTypes. The
+// synthetic packet's source is always unicast.
+func TestAddrTypeSourceConstraint(t *testing.T) {
+	excluding := facts.Rule{Handle: 10, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "addrtype", Decoded: true,
+			AddrType: &facts.AddrTypeInfo{SourceTypes: []string{"local"}}}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, _ := MatchRule(testPacket(), excluding); out != OutcomeNoMatch {
+		t.Fatalf("want no match: source-type local excludes the packet's unicast source")
+	}
+
+	deciding := facts.Rule{Handle: 11, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "addrtype", Decoded: true,
+			AddrType: &facts.AddrTypeInfo{SourceTypes: []string{"unicast"}, DestTypes: []string{"local"}}}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, _ := MatchRule(testPacket(), deciding); out != OutcomeMatch {
+		t.Fatalf("want match: source-type unicast passes, dest-type local decides and the destination is local")
+	}
+	p := testPacket()
+	p.DstIsLocal = false
+	if out, _ := MatchRule(p, deciding); out != OutcomeNoMatch {
+		t.Fatalf("want no match: source-type unicast passes, but dest-type local decides and the destination is not local")
+	}
+}
+
+// An addrtype name outside the six xt addrtype knows is unresolvable.
+func TestAddrTypeUnrecognisedNameIsUnknown(t *testing.T) {
+	rule := facts.Rule{Handle: 12, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "addrtype", Decoded: true,
+			AddrType: &facts.AddrTypeInfo{DestTypes: []string{"prohibit"}}}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeUnknown {
+		t.Fatalf("want unknown: \"prohibit\" is not a modelled addrtype value")
+	}
+}
+
+// A decoded addrtype match with no constraint at all is unresolvable, not an
+// optimistic match.
+func TestAddrTypeBothSetsEmptyIsUnknown(t *testing.T) {
+	rule := facts.Rule{Handle: 13, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "addrtype", Decoded: true,
+			AddrType: &facts.AddrTypeInfo{}}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeUnknown {
+		t.Fatalf("want unknown: no dest or source constraint is modelled")
+	}
+}
+
 // An icmp match can never match a TCP packet, so it is resolvable by name.
 func TestICMPMatchNeverMatchesTCP(t *testing.T) {
 	rule := facts.Rule{Handle: 5, Exprs: []facts.Expr{

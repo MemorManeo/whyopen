@@ -220,17 +220,42 @@ func xtExpr(pkt *Packet, x *facts.XtExpr) (Outcome, Action, bool) {
 		return OutcomeNoMatch, none, true
 
 	case "addrtype":
-		if !x.Decoded || x.AddrType == nil || len(x.AddrType.DestTypes) == 0 {
+		if !x.Decoded || x.AddrType == nil {
 			return OutcomeUnknown, none, false
 		}
-		if !slices.Contains(x.AddrType.DestTypes, "local") {
+		dst, src := x.AddrType.DestTypes, x.AddrType.SourceTypes
+		if len(dst) == 0 && len(src) == 0 {
 			return OutcomeUnknown, none, false
 		}
-		hit := pkt.DstIsLocal
-		if x.AddrType.InvertDest {
-			hit = !hit
+		if !knownAddrTypes(dst) || !knownAddrTypes(src) {
+			return OutcomeUnknown, none, false
 		}
-		if hit {
+
+		// The synthetic packet's address roles are known with certainty: the
+		// destination is local when it is one of this host's own addresses,
+		// unicast otherwise (a DNAT-rewritten destination is a routable
+		// container address that is not on this host); the source is always
+		// a unicast address in the internet zone. Neither role is ever
+		// broadcast, anycast or multicast, so a rule demanding one of those
+		// is a fact we can resolve, not a guess.
+		dstRole := "unicast"
+		if pkt.DstIsLocal {
+			dstRole = "local"
+		}
+		srcRole := "unicast"
+
+		dstHit := true
+		if len(dst) > 0 {
+			dstHit = slices.Contains(dst, dstRole)
+			if x.AddrType.InvertDest {
+				dstHit = !dstHit
+			}
+		}
+		srcHit := true
+		if len(src) > 0 {
+			srcHit = slices.Contains(src, srcRole)
+		}
+		if dstHit && srcHit {
 			return OutcomeMatch, none, true
 		}
 		return OutcomeNoMatch, none, true
@@ -240,4 +265,19 @@ func xtExpr(pkt *Packet, x *facts.XtExpr) (Outcome, Action, bool) {
 		return OutcomeNoMatch, none, true
 	}
 	return OutcomeUnknown, none, false
+}
+
+// knownAddrTypes reports whether every name in types is one of the six
+// values the xt addrtype match understands. An unrecognised name is the
+// genuine "cannot resolve" case: the caller must return Unknown rather than
+// silently ignoring the constraint.
+func knownAddrTypes(types []string) bool {
+	for _, t := range types {
+		switch t {
+		case "unspec", "unicast", "local", "broadcast", "anycast", "multicast":
+		default:
+			return false
+		}
+	}
+	return true
 }
