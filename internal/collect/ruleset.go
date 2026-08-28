@@ -9,20 +9,57 @@ import (
 	"github.com/google/nftables"
 )
 
+// rulesetSource is the read-only slice of *nftables.Conn that whyopen uses.
+// Naming it as an interface keeps the read-only promise structural (no write
+// call is reachable from this file) and lets the traversal be tested without
+// netlink.
+type rulesetSource interface {
+	ListTables() ([]*nftables.Table, error)
+	ListChainsOfTableFamily(family nftables.TableFamily) ([]*nftables.Chain, error)
+	GetRules(t *nftables.Table, c *nftables.Chain) ([]*nftables.Rule, error)
+}
+
 // Ruleset reads the full nftables ruleset over netlink. It is strictly
 // read-only: only ListTables, ListChainsOfTableFamily and GetRules are used.
 // Requires CAP_NET_ADMIN.
 func Ruleset() (facts.Ruleset, []facts.Warning, error) {
-	var warns []facts.Warning
-
 	c, err := nftables.New()
 	if err != nil {
-		return facts.Ruleset{ReadFailed: true}, warns, fmt.Errorf("open netlink: %w", err)
+		return facts.Ruleset{ReadFailed: true}, nil, fmt.Errorf("open netlink: %w", err)
 	}
+	return readRuleset(c)
+}
+
+// readRuleset walks a source and reports what it managed to read. Any
+// failure, total or partial, sets ReadFailed: a ruleset missing one chain is
+// not a ruleset whyopen can draw a confident conclusion from, and Evaluate's
+// short circuit is the only thing standing between a silently truncated read
+// and a confident "reachable". A chain removed by Docker between the list
+// call and the GetRules call is an ordinary live-host race, not an exotic
+// failure.
+func readRuleset(c rulesetSource) (facts.Ruleset, []facts.Warning, error) {
+	var warns []facts.Warning
 
 	tables, err := c.ListTables()
 	if err != nil {
 		return facts.Ruleset{ReadFailed: true}, warns, fmt.Errorf("list tables: %w", err)
+	}
+
+	// ListChainsOfTableFamily returns every chain of the family, not of one
+	// table, so it is fetched once per family. A UFW plus Docker host has
+	// five tables in ip alone.
+	type familyChains struct {
+		chains []*nftables.Chain
+		err    error
+	}
+	cache := map[nftables.TableFamily]familyChains{}
+	listChains := func(f nftables.TableFamily) ([]*nftables.Chain, error) {
+		if got, ok := cache[f]; ok {
+			return got.chains, got.err
+		}
+		chains, err := c.ListChainsOfTableFamily(f)
+		cache[f] = familyChains{chains: chains, err: err}
+		return chains, err
 	}
 
 	var rs facts.Ruleset
@@ -33,12 +70,13 @@ func Ruleset() (facts.Ruleset, []facts.Warning, error) {
 		}
 		ft := facts.Table{Family: fam, Name: t.Name}
 
-		chains, err := c.ListChainsOfTableFamily(t.Family)
+		chains, err := listChains(t.Family)
 		if err != nil {
 			warns = append(warns, facts.Warning{
 				Source:  "ruleset",
 				Message: fmt.Sprintf("list chains for %s/%s: %v", fam, t.Name, err),
 			})
+			rs.ReadFailed = true
 			continue
 		}
 		for _, ch := range chains {
@@ -60,6 +98,7 @@ func Ruleset() (facts.Ruleset, []facts.Warning, error) {
 					Source:  "ruleset",
 					Message: fmt.Sprintf("get rules for %s/%s/%s: %v", fam, t.Name, ch.Name, err),
 				})
+				rs.ReadFailed = true
 				continue
 			}
 			for _, r := range rules {
