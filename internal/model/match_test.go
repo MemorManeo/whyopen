@@ -189,6 +189,12 @@ func TestUnresolvableExpressionIsUnknown(t *testing.T) {
 		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent"}},
 		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "network", Offset: 4, Len: 2}},
 		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "gt", Register: 1, Data: "00"}},
+		// C1: an expression the collector had no decoder for. It is the
+		// nft spelling of a port list ("tcp dport { 22, 80 }") among other
+		// things, so treating it as transparent turned a set-scoped accept
+		// into an unconditional one.
+		{Kind: facts.ExprUnknown, Note: "*expr.Lookup"},
+		{Kind: facts.ExprUnknown, Note: "*expr.Range"},
 	} {
 		rule := facts.Rule{Handle: 6, Exprs: []facts.Expr{e,
 			{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}}}}

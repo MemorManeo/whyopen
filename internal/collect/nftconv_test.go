@@ -107,3 +107,35 @@ func TestConvertNativeExprs(t *testing.T) {
 		t.Fatalf("verdict = %+v", got[4].Verdict)
 	}
 }
+
+// C1: an expression with no case in convertExpr must be marked
+// facts.ExprUnknown, not facts.ExprOther. ExprOther is transparent to the
+// evaluator, so funnelling an anonymous set lookup into it made
+// "tcp dport { 22, 80 } accept" resolve as an unconditional accept.
+func TestConvertUnhandledExpressionIsUnknown(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Lookup{SourceRegister: 1, SetName: "__set0"},
+		&expr.Range{Register: 1},
+	})
+	for i, want := range []string{"*expr.Lookup", "*expr.Range"} {
+		if got[i].Kind != facts.ExprUnknown {
+			t.Fatalf("expr %d kind = %q, want %q", i, got[i].Kind, facts.ExprUnknown)
+		}
+		if got[i].Note != want {
+			t.Fatalf("expr %d note = %q, want the Go type name %q", i, got[i].Note, want)
+		}
+	}
+}
+
+// C1: a native nft reject carries no expr.Verdict, so it used to land in the
+// silently dropped set. It is terminal, which makes it the most dangerous
+// possible member of that set.
+func TestConvertRejectIsATerminalVerdict(t *testing.T) {
+	got := ConvertExprs([]expr.Any{&expr.Reject{Type: 0, Code: 3}})
+	if got[0].Kind != facts.ExprVerdict || got[0].Verdict == nil {
+		t.Fatalf("reject = %+v, want a verdict expression", got[0])
+	}
+	if got[0].Verdict.Kind != "reject" {
+		t.Fatalf("reject verdict kind = %q, want reject", got[0].Verdict.Kind)
+	}
+}

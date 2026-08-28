@@ -108,9 +108,17 @@ const (
 	ExprBitwise ExprKind = "bitwise"
 	ExprVerdict ExprKind = "verdict"
 	ExprXt      ExprKind = "xt"
-	// ExprOther is recorded for completeness and never affects a match:
-	// counters and limits. Note carries the original kind.
+	// ExprOther is recorded for completeness and provably never affects a
+	// match. Exactly two expressions qualify: counters and limits. Nothing
+	// else may be recorded as ExprOther, because the evaluator treats it as
+	// fully transparent. Note carries the original kind.
 	ExprOther ExprKind = "other"
+	// ExprUnknown is an expression whyopen has no decoder for. It is the
+	// opposite of transparent: the evaluator must refuse to resolve any
+	// rule carrying one, because an unrecognised expression can constrain
+	// the match (an anonymous set lookup, a range) or be terminal in its
+	// own right. Note carries the original Go type name, for diagnosis.
+	ExprUnknown ExprKind = "unknown"
 )
 
 type Expr struct {
@@ -151,8 +159,12 @@ type BitwiseExpr struct {
 	Xor            string `json:"xor"`
 }
 
+// VerdictExpr also carries "reject", which is not an nftables verdict
+// expression but a separate terminal statement with no verdict of its own.
+// It is recorded here because its effect on reachability is identical to a
+// drop, and the evaluator would otherwise have to special-case it twice.
 type VerdictExpr struct {
-	Kind  string `json:"kind"` // accept | drop | return | jump | goto | continue | queue
+	Kind  string `json:"kind"` // accept | drop | reject | return | jump | goto | continue | queue
 	Chain string `json:"chain,omitempty"`
 }
 

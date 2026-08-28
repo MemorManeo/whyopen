@@ -93,6 +93,13 @@ func MatchRule(pkt *Packet, r facts.Rule) (Outcome, Action) {
 			// principle drop traffic, but only above a rate, so treating it
 			// as transparent is the conservative direction for an exposure
 			// audit: it reports reachable rather than hiding a hole.
+
+		case facts.ExprUnknown:
+			// An expression the collector had no decoder for. It may be an
+			// anonymous set lookup, a range, or a terminal statement, so it
+			// is the one thing that must never be treated as transparent.
+			return OutcomeUnknown, act
+
 		default:
 			return OutcomeUnknown, act
 		}

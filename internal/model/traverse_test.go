@@ -198,3 +198,47 @@ func TestReturnInRegularChainResumesAfterJump(t *testing.T) {
 		t.Fatalf("hits = %d, want the jump, the return, and the drop all recorded: %+v", len(hits), hits)
 	}
 }
+
+// C1, the reviewer's end-to-end scenario: an input base chain with policy
+// drop whose only rule is "tcp dport { 22, 80 } accept". The set lookup used
+// to be dropped on the floor, leaving "dport (loaded, never compared) accept",
+// which matched unconditionally and reported a Postgres socket on 5432 as
+// reachable. It must be unknown.
+func TestUnknownExprInAnAcceptRuleDoesNotOpenADropPolicyChain(t *testing.T) {
+	rs := facts.Ruleset{Tables: []facts.Table{
+		{Family: "ip", Name: "filter", Chains: []facts.Chain{{
+			Name: "input", Base: true, Hook: "input", Priority: 0, Policy: "drop",
+			Rules: []facts.Rule{{Handle: 1, Exprs: []facts.Expr{
+				{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+				{Kind: facts.ExprUnknown, Note: "*expr.Lookup"},
+				{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+			}}},
+		}}},
+	}}
+	res, _ := Traverse(rs, "ip", "input", testPacket())
+	if res.Kind != "unknown" {
+		t.Fatalf("result = %q (%s), want unknown: the set lookup was never resolved", res.Kind, res.Reason)
+	}
+}
+
+// A native nft reject is terminal. It carries no verdict expression, so
+// before C1 it was silently dropped and the rule looked like a no-op.
+func TestNativeRejectIsTerminal(t *testing.T) {
+	rs := facts.Ruleset{Tables: []facts.Table{
+		{Family: "ip", Name: "filter", Chains: []facts.Chain{{
+			Name: "input", Base: true, Hook: "input", Priority: 0, Policy: "accept",
+			Rules: []facts.Rule{
+				{Handle: 1, Exprs: []facts.Expr{
+					{Kind: facts.ExprVerdict, Note: "reject", Verdict: &facts.VerdictExpr{Kind: "reject"}}}},
+				acceptRule(2),
+			},
+		}}},
+	}}
+	res, hits := Traverse(rs, "ip", "input", testPacket())
+	if res.Kind != "drop" {
+		t.Fatalf("result = %q, want drop: a reject stops the packet", res.Kind)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("hits = %d, want the reject to be terminal: %+v", len(hits), hits)
+	}
+}

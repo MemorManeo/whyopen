@@ -140,8 +140,15 @@ func (w *walker) walkChain(table string, ch facts.Chain, depth int) Result {
 		switch act.Kind {
 		case "accept":
 			return Result{Kind: "accept"}
-		case "drop":
-			return Result{Kind: "drop", Reason: "dropped by " + table + "/" + ch.Name + " rule " + itoa64(r.Handle)}
+		case "drop", "reject":
+			// A reject answers the sender with an ICMP error or a TCP reset
+			// instead of discarding the packet silently. For reachability
+			// the two are the same: the listener never sees the packet.
+			verb := "dropped"
+			if act.Kind == "reject" {
+				verb = "rejected"
+			}
+			return Result{Kind: "drop", Reason: verb + " by " + table + "/" + ch.Name + " rule " + itoa64(r.Handle)}
 		case "dnat":
 			w.dnat = act.DNAT
 			return Result{Kind: "accept", DNAT: act.DNAT}

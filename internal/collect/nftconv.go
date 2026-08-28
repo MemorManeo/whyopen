@@ -33,8 +33,10 @@ var addrTypeNames = map[uint16]string{
 }
 
 // ConvertExprs maps netlink expressions onto whyopen's serializable union.
-// Anything without a typed decoder is preserved by name with Decoded false,
-// so the evaluator can refuse to guess about it later.
+// An xt extension without a typed decoder is preserved by name with Decoded
+// false; a netlink expression with no case at all becomes facts.ExprUnknown.
+// Either way the evaluator can see that it must refuse to guess, which it
+// could not do if the expression were simply dropped.
 func ConvertExprs(exprs []expr.Any) []facts.Expr {
 	out := make([]facts.Expr, 0, len(exprs))
 	for _, e := range exprs {
@@ -78,12 +80,23 @@ func convertExpr(e expr.Any) facts.Expr {
 		return facts.Expr{Kind: facts.ExprXt, Xt: convertXt("match", v.Name, v.Rev, v.Info)}
 	case *expr.Target:
 		return facts.Expr{Kind: facts.ExprXt, Xt: convertXt("target", v.Name, v.Rev, v.Info)}
+	case *expr.Reject:
+		// A native nft reject carries no expr.Verdict, so without this case
+		// it would fall to the default arm and the rule would look like it
+		// had no terminal statement at all. Its effect on reachability is a
+		// drop; the Note keeps the distinction visible in the document.
+		return facts.Expr{Kind: facts.ExprVerdict, Note: "reject",
+			Verdict: &facts.VerdictExpr{Kind: "reject"}}
 	case *expr.Counter:
 		return facts.Expr{Kind: facts.ExprOther, Note: "counter"}
 	case *expr.Limit:
 		return facts.Expr{Kind: facts.ExprOther, Note: "limit"}
 	default:
-		return facts.Expr{Kind: facts.ExprOther, Note: fmt.Sprintf("%T", e)}
+		// Everything without a decoder is marked unknown, never ExprOther:
+		// ExprOther is transparent to the evaluator, and an expression
+		// whyopen has not decoded may well constrain the match (an
+		// anonymous set lookup, a range) or terminate the rule.
+		return facts.Expr{Kind: facts.ExprUnknown, Note: fmt.Sprintf("%T", e)}
 	}
 }
 

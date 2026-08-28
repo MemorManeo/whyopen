@@ -75,3 +75,19 @@ func TestRenderRuleWithBitwiseMask(t *testing.T) {
 		t.Fatalf("RenderRule = %q, want an explicit masked form for a non-contiguous mask", got)
 	}
 }
+
+// C1: an expression whyopen could not decode must be visible in --explain.
+// Omitting it made the rendered rule read as though it were fully
+// understood, which is the opposite of what the reader needs from the very
+// rule that produced an unknown verdict.
+func TestRenderRuleShowsUnresolvedExpressions(t *testing.T) {
+	r := facts.Rule{Handle: 40, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+		{Kind: facts.ExprUnknown, Note: "*expr.Lookup"},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	got := RenderRule(r)
+	if !strings.Contains(got, "<unresolved: *expr.Lookup>") {
+		t.Fatalf("RenderRule = %q, want the unresolved expression named", got)
+	}
+}

@@ -38,6 +38,12 @@ func RenderRule(r facts.Rule) string {
 			pending = ""
 		case facts.ExprXt:
 			parts = append(parts, renderXt(e.Xt))
+		case facts.ExprUnknown:
+			// Never omit an expression whyopen could not decode: doing so
+			// makes --explain read as though the rule were fully
+			// understood, which is exactly the rule that produced the
+			// unknown verdict the reader is trying to understand.
+			parts = append(parts, "<unresolved: "+unresolvedName(e.Note)+">")
 		case facts.ExprVerdict:
 			if e.Verdict.Chain != "" {
 				parts = append(parts, e.Verdict.Kind+" "+e.Verdict.Chain)
@@ -52,6 +58,15 @@ func RenderRule(r facts.Rule) string {
 	// opSymbol returns "" for eq, which leaves a double space where the
 	// symbol would have gone (e.g. "daddr  203.0.113.10"). Collapse it.
 	return strings.ReplaceAll(strings.Join(parts, " "), "  ", " ")
+}
+
+// unresolvedName is the collector's Note, which carries the original Go
+// type name. An older facts document may not have one.
+func unresolvedName(note string) string {
+	if note == "" {
+		return "unnamed expression"
+	}
+	return note
 }
 
 func payloadName(p *facts.PayloadExpr) string {
