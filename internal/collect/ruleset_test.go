@@ -227,3 +227,25 @@ func TestLegacyBackendDetectsIPv6Separately(t *testing.T) {
 		t.Fatalf("warnings = %+v, want one naming the ip6 legacy backend", warns)
 	}
 }
+
+// /proc/net/ip_tables_names is root-only, so an unprivileged run cannot tell
+// whether legacy rules exist. A silent pass would be the same silent
+// all-clear the check exists to prevent.
+func TestLegacyBackendWarnsWhenItCannotCheck(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, an unreadable file cannot be simulated")
+	}
+	proc := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(proc, "net"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(proc, "net", "ip_tables_names")
+	if err := os.WriteFile(path, []byte("filter\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	warns := LegacyBackend(proc)
+	if len(warns) != 1 || !strings.Contains(warns[0].Message, "could not check") {
+		t.Fatalf("warnings = %+v, want one saying the check could not be made", warns)
+	}
+}

@@ -3,7 +3,9 @@
 package collect
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,8 +192,19 @@ func LegacyBackend(procRoot string) []facts.Warning {
 	var warns []facts.Warning
 	for _, f := range legacyTableFiles {
 		b, err := os.ReadFile(filepath.Join(procRoot, f.rel))
-		if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
 			continue // the module is not loaded, which is the ordinary case
+		}
+		if err != nil {
+			// The file is root-only, so an unprivileged run cannot tell
+			// whether legacy rules exist. Saying so beats a silent pass:
+			// the whole point of the check is that an unnoticed legacy
+			// backend makes every verdict wrong in the dangerous direction.
+			warns = append(warns, facts.Warning{
+				Source:  "ruleset",
+				Message: fmt.Sprintf("could not check /proc/%s for %s rules (%v), so whyopen cannot rule out a legacy ruleset it would not see", f.rel, f.backend, err),
+			})
+			continue
 		}
 		tables := strings.Fields(string(b))
 		if len(tables) == 0 {
