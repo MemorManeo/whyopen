@@ -71,6 +71,13 @@ func Traverse(rs facts.Ruleset, family, hook string, pkt *Packet) (Result, []Hit
 		case "accept":
 			// Continue to the next base chain: in nftables an accept in one
 			// base chain does not skip the others on the same hook.
+		default:
+			// Defense in depth: walkChain now resolves a base chain's
+			// return (see basePolicyResult) the same as fallthrough, so a
+			// base chain should never yield anything but accept, drop, or
+			// unknown here. If it somehow does, say so rather than
+			// silently treating it as a pass to the next base chain.
+			return Result{Kind: "unknown", Reason: "base chain " + b.table + "/" + b.chain.Name + " yielded unexpected verdict " + res.Kind}, w.hits
 		}
 	}
 	return Result{Kind: "accept", DNAT: w.dnat}, w.hits
@@ -96,6 +103,18 @@ func (w *walker) findChain(table, name string) (facts.Chain, bool) {
 		}
 	}
 	return facts.Chain{}, false
+}
+
+// basePolicyResult resolves what a base chain does once nothing earlier has
+// already decided the verdict: a drop policy drops, anything else accepts.
+// In real nftables this is what happens both when a chain's rules run out
+// (natural fallthrough) and when a rule inside it issues an explicit
+// return, so both callers share this.
+func basePolicyResult(table string, ch facts.Chain, reason string) Result {
+	if ch.Policy == "drop" {
+		return Result{Kind: "drop", Reason: reason}
+	}
+	return Result{Kind: "accept"}
 }
 
 // walkChain returns accept, drop, unknown, or none for a chain that fell
@@ -127,6 +146,11 @@ func (w *walker) walkChain(table string, ch facts.Chain, depth int) Result {
 			w.dnat = act.DNAT
 			return Result{Kind: "accept", DNAT: act.DNAT}
 		case "return":
+			if ch.Base {
+				// In a base chain, return is equivalent to falling off the
+				// end of it: the chain's policy applies.
+				return basePolicyResult(table, ch, "return hit the drop policy of "+table+"/"+ch.Name)
+			}
 			return Result{Kind: "none"}
 		case "jump":
 			target, ok := w.findChain(table, act.Chain)
@@ -157,10 +181,7 @@ func (w *walker) walkChain(table string, ch facts.Chain, depth int) Result {
 	}
 
 	if ch.Base {
-		if ch.Policy == "drop" {
-			return Result{Kind: "drop", Reason: "fell through to the drop policy of " + table + "/" + ch.Name}
-		}
-		return Result{Kind: "accept"}
+		return basePolicyResult(table, ch, "fell through to the drop policy of "+table+"/"+ch.Name)
 	}
 	return Result{Kind: "none"}
 }

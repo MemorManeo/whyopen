@@ -21,6 +21,11 @@ func jumpRule(handle uint64, chain string) facts.Rule {
 		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "jump", Chain: chain}}}}
 }
 
+func returnRule(handle uint64) facts.Rule {
+	return facts.Rule{Handle: handle, Exprs: []facts.Expr{
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "return"}}}}
+}
+
 // In nftables, accept in one base chain does NOT skip the other base chains
 // registered on the same hook. A later base chain can still drop. This is the
 // single most misunderstood rule in the system and the reason a UFW box can
@@ -128,5 +133,68 @@ func TestJumpLoopTerminates(t *testing.T) {
 	}}
 	if res, _ := Traverse(rs, "ip", "input", testPacket()); res.Kind != "unknown" {
 		t.Fatalf("result = %q, want unknown rather than a hang", res.Kind)
+	}
+}
+
+// An explicit return in a base chain is equivalent to falling off the end
+// of it: the chain's policy applies. A drop policy must drop the packet.
+func TestReturnInBaseChainWithDropPolicyDrops(t *testing.T) {
+	rs := facts.Ruleset{Tables: []facts.Table{
+		{Family: "ip", Name: "filter", Chains: []facts.Chain{{
+			Name: "INPUT", Base: true, Hook: "input", Priority: 0, Policy: "drop",
+			Rules: []facts.Rule{returnRule(1)},
+		}}},
+	}}
+	res, hits := Traverse(rs, "ip", "input", testPacket())
+	if res.Kind != "drop" {
+		t.Fatalf("result = %q, want drop: an explicit return in a base chain must apply its drop policy", res.Kind)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("hits = %d, want 1: %+v", len(hits), hits)
+	}
+}
+
+// The same, with an accept policy, must not terminate the hook: the next
+// base chain still runs, proving the accept path continues rather than
+// short-circuiting.
+func TestReturnInBaseChainWithAcceptPolicyContinuesToNextBaseChain(t *testing.T) {
+	rs := facts.Ruleset{Tables: []facts.Table{
+		{Family: "ip", Name: "early", Chains: []facts.Chain{{
+			Name: "INPUT", Base: true, Hook: "input", Priority: -10, Policy: "accept",
+			Rules: []facts.Rule{returnRule(1)},
+		}}},
+		{Family: "ip", Name: "late", Chains: []facts.Chain{{
+			Name: "INPUT", Base: true, Hook: "input", Priority: 0, Policy: "accept",
+			Rules: []facts.Rule{dropRule(2)},
+		}}},
+	}}
+	res, hits := Traverse(rs, "ip", "input", testPacket())
+	if res.Kind != "drop" {
+		t.Fatalf("result = %q, want drop: return with an accept policy must not short-circuit the hook", res.Kind)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("hits = %d, want both base chains visited: %+v", len(hits), hits)
+	}
+}
+
+// An explicit return in a regular chain reached by jump must still resume
+// at the rule after the jump, the same as falling off the end of the
+// target chain does (TestJumpReturnsToCaller).
+func TestReturnInRegularChainResumesAfterJump(t *testing.T) {
+	rs := facts.Ruleset{Tables: []facts.Table{
+		{Family: "ip", Name: "filter", Chains: []facts.Chain{
+			{
+				Name: "INPUT", Base: true, Hook: "input", Priority: 0, Policy: "accept",
+				Rules: []facts.Rule{jumpRule(1, "ufw-user-input"), dropRule(2)},
+			},
+			{Name: "ufw-user-input", Rules: []facts.Rule{returnRule(3)}},
+		}},
+	}}
+	res, hits := Traverse(rs, "ip", "input", testPacket())
+	if res.Kind != "drop" {
+		t.Fatalf("result = %q, want the rule after the jump to run after an explicit return", res.Kind)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("hits = %d, want the jump, the return, and the drop all recorded: %+v", len(hits), hits)
 	}
 }
