@@ -262,6 +262,18 @@ func evaluateAtDestination(f facts.Facts, zone Zone, ep Endpoint, family string,
 		if pkt.DstIsLocal {
 			hook = "input"
 		} else {
+			// The rewritten destination is on another host (a container),
+			// so the kernel has to route the packet there, and it only does
+			// that when forwarding is enabled for the family. With the
+			// sysctl off the routing layer discards the packet before the
+			// forward hook runs, so no rule in that hook can make the
+			// endpoint reachable however permissive it is.
+			if sysctl, on := forwarding(f.Host.Sysctls, family); !on {
+				v.Result = "filtered"
+				v.Reason = fmt.Sprintf("via %s: DNAT to %s:%d, but %s is 0, so the kernel never routes the packet on and it does not reach the forward hook",
+					c.IP, pre.DNAT.IP, pre.DNAT.Port, sysctl)
+				return v
+			}
 			outIface, ok := ifaceFor(f, pre.DNAT.IP)
 			if !ok {
 				v.Result = "unknown"
@@ -280,6 +292,17 @@ func evaluateAtDestination(f facts.Facts, zone Zone, ep Endpoint, family string,
 	res, hits := Traverse(f.Ruleset, family, "input", pkt)
 	v.Path = append(v.Path, hits...)
 	return finish(v, res, fmt.Sprintf("via %s: delivered locally, so the input hook decides", c.IP))
+}
+
+// forwarding names the sysctl that governs forwarding for the family and
+// reports whether it is on. Both values were collected from the start and
+// read nowhere, so a DNAT'd packet was reported as reaching the forward hook
+// even on a host whose kernel would never route it there.
+func forwarding(sc facts.Sysctls, family string) (sysctl string, on bool) {
+	if family == "ip6" {
+		return "net.ipv6.conf.all.forwarding", sc.IPv6Forward
+	}
+	return "net.ipv4.ip_forward", sc.IPv4Forward
 }
 
 func finish(v Verdict, res Result, how string) Verdict {

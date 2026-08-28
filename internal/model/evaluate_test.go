@@ -1,6 +1,7 @@
 package model
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/MemorManeo/whyopen/internal/facts"
@@ -424,5 +425,51 @@ func TestReadableRulesetStillEvaluatesNormally(t *testing.T) {
 	vs := Evaluate(f, InternetZone())
 	if len(vs) != 1 || vs[0].Result != "filtered" {
 		t.Fatalf("got %+v, want filtered by the input drop policy, same as before this ruling", vs)
+	}
+}
+
+// I5: net.ipv4.ip_forward and net.ipv6.conf.all.forwarding were collected
+// and read nowhere. A DNAT'd packet aimed at a container is routed, not
+// delivered locally, so with forwarding off the kernel discards it before
+// the forward hook runs and no rule there can make the port reachable.
+func TestDNATWithForwardingDisabledIsFiltered(t *testing.T) {
+	f := hostFacts()
+	f.Host.Sysctls.IPv4Forward = false
+	filter := ufwFilter()
+	filter.Chains[2].Rules = []facts.Rule{acceptRule(12)} // DOCKER accepts
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter, dockerNAT("0.0.0.0", 5432)}}
+	f.Docker = facts.Docker{Available: true, Containers: []facts.Container{{
+		ID: "c1", Name: "resourcehub-db",
+		Publishes: []facts.Publish{{HostIP: "0.0.0.0", HostPort: 5432,
+			ContainerIP: "172.20.0.2", ContainerPort: 5432, Proto: "tcp"}},
+	}}}
+
+	vs := Evaluate(f, InternetZone())
+	if len(vs) != 1 {
+		t.Fatalf("got %d verdicts, want 1: %+v", len(vs), vs)
+	}
+	if vs[0].Result != "filtered" {
+		t.Fatalf("result = %q (%s), want filtered: the kernel does not forward", vs[0].Result, vs[0].Reason)
+	}
+	if !strings.Contains(vs[0].Reason, "net.ipv4.ip_forward") {
+		t.Fatalf("reason = %q, want it to name the disabled sysctl", vs[0].Reason)
+	}
+}
+
+// The same host with forwarding on is the canonical reachable case, so the
+// sysctl is doing the deciding and nothing else changed.
+func TestDNATWithForwardingEnabledStillReachable(t *testing.T) {
+	f := hostFacts() // IPv4Forward: true
+	filter := ufwFilter()
+	filter.Chains[2].Rules = []facts.Rule{acceptRule(12)}
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter, dockerNAT("0.0.0.0", 5432)}}
+	f.Docker = facts.Docker{Available: true, Containers: []facts.Container{{
+		ID: "c1", Name: "resourcehub-db",
+		Publishes: []facts.Publish{{HostIP: "0.0.0.0", HostPort: 5432,
+			ContainerIP: "172.20.0.2", ContainerPort: 5432, Proto: "tcp"}},
+	}}}
+
+	if vs := Evaluate(f, InternetZone()); len(vs) != 1 || vs[0].Result != "reachable" {
+		t.Fatalf("got %+v, want reachable", vs)
 	}
 }
