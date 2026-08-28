@@ -273,6 +273,27 @@ func xtExpr(pkt *Packet, x *facts.XtExpr) (Outcome, Action, bool) {
 	case "icmp", "icmp6":
 		// Cannot match a TCP or UDP packet, whatever its payload says.
 		return OutcomeNoMatch, none, true
+
+	case "rt":
+		// xt rt matches on an IPv6 routing header. The synthetic packet is a
+		// bare TCP or UDP segment with no extension headers, so it carries
+		// no routing header and this match provably cannot fire. UFW ships
+		// "rt type 0 counter drop" as the second rule of ufw6-before-input
+		// on every IPv6 installation, so treating it as unresolvable made
+		// every IPv6 verdict on a stock UFW host unknown, which is precisely
+		// the dual-stack blind spot whyopen exists to report on.
+		return OutcomeNoMatch, none, true
+
+	case "hl":
+		// xt hl matches the IPv6 hop limit. Its payload decodes to
+		// xt.Unknown, so the operator is not visible here, but every use UFW
+		// makes of it asserts an on-link packet (--hl-eq 255) for neighbour
+		// discovery. A packet sourced from the internet zone has crossed at
+		// least one router, so its hop limit is below 255 and the match
+		// cannot fire. Where a hand-written rule uses another operator this
+		// errs towards reporting the port reachable, which is the safe
+		// direction for an exposure audit: it never hides a hole.
+		return OutcomeNoMatch, none, true
 	}
 	return OutcomeUnknown, none, false
 }

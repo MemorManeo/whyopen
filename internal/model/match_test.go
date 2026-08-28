@@ -259,3 +259,35 @@ func TestConntrackNotFullyDecodedIsUnknown(t *testing.T) {
 		t.Fatalf("want unknown: the match constrains something whyopen did not decode")
 	}
 }
+
+// L1: "rt type 0 counter drop" is the second rule of ufw6-before-input on
+// every UFW IPv6 installation. xt rt matches an IPv6 routing header, and the
+// synthetic packet is a bare TCP or UDP segment with no extension headers,
+// so it provably cannot match. Treating it as unresolvable made every IPv6
+// verdict on a stock UFW host unknown.
+func TestRTMatchCannotMatchAPlainSegment(t *testing.T) {
+	rule := facts.Rule{Handle: 17, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "rt"}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "drop"}},
+	}}
+	p := testPacket()
+	p.Family, p.Dst, p.Src = "ip6", netip.MustParseAddr("2001:db8::10"), netip.MustParseAddr("2001:db8:ffff::7")
+	if out, _ := MatchRule(p, rule); out != OutcomeNoMatch {
+		t.Fatalf("out=%v, want no match: the packet carries no IPv6 routing header", out)
+	}
+}
+
+// L1: UFW asserts an on-link hop limit (--hl-eq 255) for neighbour
+// discovery. A packet from the internet zone has crossed at least one
+// router, so it cannot have hop limit 255.
+func TestHLMatchCannotMatchAnInternetSourcedPacket(t *testing.T) {
+	rule := facts.Rule{Handle: 18, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "hl"}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	p := testPacket()
+	p.Family, p.Dst, p.Src = "ip6", netip.MustParseAddr("2001:db8::10"), netip.MustParseAddr("2001:db8:ffff::7")
+	if out, _ := MatchRule(p, rule); out != OutcomeNoMatch {
+		t.Fatalf("out=%v, want no match: an internet-sourced packet cannot have hop limit 255", out)
+	}
+}

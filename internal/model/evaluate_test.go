@@ -473,3 +473,53 @@ func TestDNATWithForwardingEnabledStillReachable(t *testing.T) {
 		t.Fatalf("got %+v, want reachable", vs)
 	}
 }
+
+// L1 end to end: with the two rules UFW ships in ufw6-before-input, an IPv6
+// verdict must resolve rather than come back unknown. On the reference host
+// all six IPv6 verdicts were blamed on "rt type 0 counter drop".
+func TestUFWIPv6BeforeInputRulesDoNotPoisonTheVerdict(t *testing.T) {
+	f := hostFacts()
+	f.Host.Interfaces[0].Addresses = append(f.Host.Interfaces[0].Addresses,
+		facts.Addr{IP: "2001:db8::10", Prefix: 64, Family: "ip6", Scope: "global"})
+
+	xtMatch := func(name string) facts.Expr {
+		return facts.Expr{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: name}}
+	}
+	drop := facts.Expr{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "drop"}}
+	accept := facts.Expr{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}}
+
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{{
+		Family: "ip6", Name: "filter", Chains: []facts.Chain{{
+			Name: "ufw6-before-input", Base: true, Hook: "input", Priority: 0, Policy: "drop",
+			Rules: []facts.Rule{
+				{Handle: 52, Exprs: []facts.Expr{xtMatch("rt"), drop}},
+				{Handle: 53, Exprs: []facts.Expr{xtMatch("icmp6"), xtMatch("hl"), accept}},
+				{Handle: 54, Exprs: []facts.Expr{
+					{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+					{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: "0016"}},
+					accept,
+				}},
+			},
+		}},
+	}}}
+	f.Sockets = []facts.Socket{
+		{Family: "ip6", Proto: "tcp", BindIP: "::", Port: 22, Unit: "ssh.service"},
+		{Family: "ip6", Proto: "tcp", BindIP: "::", Port: 9000, Process: "app"},
+	}
+
+	for _, v := range Evaluate(f, InternetZone()) {
+		if v.Family != "ip6" {
+			continue
+		}
+		if v.Result == "unknown" {
+			t.Fatalf("port %d came back unknown (%s); UFW's rt and hl rules must resolve", v.Endpoint.Port, v.Reason)
+		}
+		want := "filtered"
+		if v.Endpoint.Port == 22 {
+			want = "reachable"
+		}
+		if v.Result != want {
+			t.Fatalf("port %d = %q (%s), want %q", v.Endpoint.Port, v.Result, v.Reason, want)
+		}
+	}
+}
