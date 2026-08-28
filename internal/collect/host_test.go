@@ -4,6 +4,7 @@ package collect
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -23,6 +24,37 @@ func TestClassifyAddr(t *testing.T) {
 		ip := netip.MustParseAddr(in)
 		if got := ClassifyAddr(ip); got != want {
 			t.Fatalf("ClassifyAddr(%s) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestHostWarnsOnUnreadableSysctls covers the fix for a defect where an
+// unreadable sysctl silently defaulted to false with nothing in the
+// returned warnings saying it was never read.
+func TestHostWarnsOnUnreadableSysctls(t *testing.T) {
+	procRoot := t.TempDir() // no sys/net/... tree, so every sysctl read fails
+
+	h, warns := Host(procRoot)
+
+	if h.Sysctls.IPv4Forward || h.Sysctls.IPv6Forward || h.Sysctls.BindV6Only {
+		t.Fatalf("sysctls = %+v, want all false when unreadable", h.Sysctls)
+	}
+
+	wantRels := []string{
+		"sys/net/ipv4/ip_forward",
+		"sys/net/ipv6/conf/all/forwarding",
+		"sys/net/ipv6/bindv6only",
+	}
+	for _, rel := range wantRels {
+		found := false
+		for _, w := range warns {
+			if w.Source == "host" && strings.Contains(w.Message, rel) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("warnings %+v do not name unreadable sysctl %q", warns, rel)
 		}
 	}
 }

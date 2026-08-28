@@ -46,6 +46,26 @@ func Host(procRoot string) (facts.Host, []facts.Warning) {
 	}
 	h.Hostname = name
 
+	// Sysctls are read before interface enumeration so a later failure can
+	// never skip them: an unreadable sysctl must always produce a warning,
+	// not a silently defaulted false.
+	for _, s := range []struct {
+		rel string
+		dst *bool
+	}{
+		{"sys/net/ipv4/ip_forward", &h.Sysctls.IPv4Forward},
+		{"sys/net/ipv6/conf/all/forwarding", &h.Sysctls.IPv6Forward},
+		{"sys/net/ipv6/bindv6only", &h.Sysctls.BindV6Only},
+	} {
+		val, ok := readSysctlBool(procRoot, s.rel)
+		*s.dst = val
+		if !ok {
+			warns = append(warns, facts.Warning{
+				Source: "host", Message: fmt.Sprintf("sysctl %s: could not read, defaulting to false", s.rel),
+			})
+		}
+	}
+
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		warns = append(warns, facts.Warning{Source: "host", Message: fmt.Sprintf("interfaces: %v", err)})
@@ -77,14 +97,17 @@ func Host(procRoot string) (facts.Host, []facts.Warning) {
 		h.Interfaces = append(h.Interfaces, fi)
 	}
 
-	h.Sysctls = facts.Sysctls{
-		IPv4Forward: readSysctlBool(procRoot, "sys/net/ipv4/ip_forward"),
-		IPv6Forward: readSysctlBool(procRoot, "sys/net/ipv6/conf/all/forwarding"),
-		BindV6Only:  readSysctlBool(procRoot, "sys/net/ipv6/bindv6only"),
-	}
 	return h, warns
 }
 
-func readSysctlBool(procRoot, rel string) bool {
-	return strings.TrimSpace(readTrimmed(filepath.Join(procRoot, rel))) == "1"
+// readSysctlBool reads a sysctl file under procRoot and reports whether it
+// could be read at all. When ok is false, value is the kernel default
+// (false); the caller must surface a warning rather than trusting it as a
+// genuine reading.
+func readSysctlBool(procRoot, rel string) (value bool, ok bool) {
+	b, err := os.ReadFile(filepath.Join(procRoot, rel))
+	if err != nil {
+		return false, false
+	}
+	return strings.TrimSpace(string(b)) == "1", true
 }
