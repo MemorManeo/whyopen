@@ -331,9 +331,11 @@ func xtExpr(pkt *Packet, x *facts.XtExpr) (Outcome, Action, bool) {
 		// makes of it asserts an on-link packet (--hl-eq 255) for neighbour
 		// discovery. A packet sourced from the internet zone has crossed at
 		// least one router, so its hop limit is below 255 and the match
-		// cannot fire. Where a hand-written rule uses another operator this
-		// errs towards reporting the port reachable, which is the safe
-		// direction for an exposure audit: it never hides a hole.
+		// cannot fire. This reasoning is sound only for the drop-shaped and
+		// on-link-accept rules UFW ships. A hand-written rule with another
+		// operator can be wrong in either direction: "hl --hl-gt 1 -j ACCEPT"
+		// in a drop-policy chain really does accept, and skipping it reports
+		// the port filtered when it is open.
 		return OutcomeNoMatch, none, true
 	}
 	return OutcomeUnknown, none, false

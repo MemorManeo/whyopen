@@ -39,8 +39,20 @@ hand," not "this is fine."
 
 Known gaps that produce `unknown` today:
 
+- Native nftables expressions whyopen has no decoder for. It decodes the
+  shapes UFW and Docker emit, which reach the kernel through iptables-nft;
+  a hand-written nft ruleset or a firewalld host uses native ones instead.
+  Native `ct state`, anonymous set lookups (`tcp dport { 22, 80 }`) and
+  ranges are all undecoded today, so on such a host a rule as ordinary as
+  `ct state established,related accept` makes every port report `unknown`.
 - `xt recent` is not decoded, so a port UFW rate-limits (`ufw limit 22/tcp`)
   reports `unknown` rather than a verdict.
+
+One known gap points the other way, reporting `filtered` where the port may
+be open: whyopen reads only the global forwarding toggles
+(`net.ipv4.ip_forward`, `net.ipv6.conf.all.forwarding`), so a host that
+leaves those off but enables forwarding on one interface
+(`net.ipv4.conf.<if>.forwarding=1`) is reported as not forwarding at all.
 
 ## Requirements
 

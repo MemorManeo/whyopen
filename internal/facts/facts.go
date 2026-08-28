@@ -70,10 +70,14 @@ type Socket struct {
 
 type Ruleset struct {
 	Tables []Table `json:"tables"`
-	// ReadFailed means the ruleset could not be read at all (typically a
-	// missing CAP_NET_ADMIN), not that the host genuinely has no rules. A
-	// zero-value Ruleset with ReadFailed unset means "read successfully,
-	// found nothing" for every document written before this field existed.
+	// ReadFailed means the ruleset below is not the whole ruleset, not that
+	// the host genuinely has no rules. It covers both a total failure
+	// (typically a missing CAP_NET_ADMIN) and a partial one: a family whose
+	// chains could not be listed, or a chain whose rules could not be read,
+	// for instance because Docker removed it mid-read. Either way no
+	// confident verdict can be drawn from what was captured. A zero-value
+	// Ruleset with ReadFailed unset means "read successfully, found nothing"
+	// for every document written before this field existed.
 	ReadFailed bool `json:"read_failed,omitempty"`
 }
 
@@ -114,10 +118,12 @@ const (
 	ExprBitwise ExprKind = "bitwise"
 	ExprVerdict ExprKind = "verdict"
 	ExprXt      ExprKind = "xt"
-	// ExprOther is recorded for completeness and provably never affects a
-	// match. Exactly two expressions qualify: counters and limits. Nothing
-	// else may be recorded as ExprOther, because the evaluator treats it as
-	// fully transparent. Note carries the original kind.
+	// ExprOther is recorded for completeness and is treated by the evaluator
+	// as fully transparent. Three expressions qualify: counters and logs,
+	// which genuinely cannot affect a match, and limits, which can drop
+	// traffic above a rate but are deliberately read as transparent anyway,
+	// because over-reporting exposure is the safe direction for an audit.
+	// Nothing else may be recorded here. Note carries the original kind.
 	ExprOther ExprKind = "other"
 	// ExprUnknown is an expression whyopen has no decoder for. It is the
 	// opposite of transparent: the evaluator must refuse to resolve any
