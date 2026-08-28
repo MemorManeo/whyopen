@@ -43,9 +43,16 @@ func main() {
 }
 
 func runCollect(args []string) int {
-	fs := flag.NewFlagSet("collect", flag.ExitOnError)
+	fs := flag.NewFlagSet("collect", flag.ContinueOnError)
 	out := fs.String("o", "-", "write the facts document here, or - for stdout")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			fmt.Print(usage)
+			return exitOK
+		}
+		// ContinueOnError already printed the parse error to fs.Output().
+		return exitError
+	}
 
 	f, err := collect.All(collect.Options{})
 	if err != nil {
@@ -54,20 +61,29 @@ func runCollect(args []string) int {
 	}
 
 	w := os.Stdout
+	var file *os.File
 	if *out != "-" {
-		file, err := os.Create(*out)
+		file, err = os.Create(*out)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "create %s: %v\n", *out, err)
 			return exitError
 		}
-		defer file.Close()
 		w = file
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(f); err != nil {
 		fmt.Fprintf(os.Stderr, "encode: %v\n", err)
+		if file != nil {
+			file.Close()
+		}
 		return exitError
+	}
+	if file != nil {
+		if err := file.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close %s: %v\n", *out, err)
+			return exitError
+		}
 	}
 	return exitOK
 }
