@@ -42,8 +42,16 @@ var ctStateNames = []bitName{
 
 // xtConntrackStateFlag is XT_CONNTRACK_STATE in MatchFlags. Every other bit
 // (--ctorigdstport, --ctproto, --ctexpire and the rest) constrains something
-// whyopen does not model.
+// whyopen does not model, with one exception below.
 const xtConntrackStateFlag = 0x1
+
+// xtConntrackStateAliasFlag is XT_CONNTRACK_STATE_ALIAS, which libxt_state
+// sets alongside XT_CONNTRACK_STATE so iptables can print the match back as
+// "-m state" rather than "-m conntrack". It is bookkeeping and constrains
+// nothing: a "-m state --state RELATED,ESTABLISHED" rule arrives here as
+// conntrack rev 3 with MatchFlags 0x2001, and treating the alias bit as an
+// unmodelled constraint made every such rule unknown.
+const xtConntrackStateAliasFlag = 0x2000
 
 // xt addrtype flags, from the Flags field of the rev 1 struct in
 // xt_addrtype.h. The two LIMIT_IFACE bits scope the match to the packet's
@@ -121,6 +129,11 @@ func convertExpr(e expr.Any) facts.Expr {
 		// drop; the Note keeps the distinction visible in the document.
 		return facts.Expr{Kind: facts.ExprVerdict, Note: "reject",
 			Verdict: &facts.VerdictExpr{Kind: "reject"}}
+	case *expr.Log:
+		// A log statement writes a line and falls through. It constrains
+		// nothing and terminates nothing, so it is the one native expression
+		// besides counters and limits that is genuinely transparent.
+		return facts.Expr{Kind: facts.ExprOther, Note: "log"}
 	case *expr.Counter:
 		return facts.Expr{Kind: facts.ExprOther, Note: "counter"}
 	case *expr.Limit:
@@ -201,7 +214,7 @@ func conntrack(matchFlags, invertFlags, stateMask uint16) (*facts.ConntrackInfo,
 		MatchesState: matchFlags&xtConntrackStateFlag != 0,
 		Invert:       invertFlags&xtConntrackStateFlag != 0,
 	}
-	decoded := matchFlags&^uint16(xtConntrackStateFlag) == 0
+	decoded := matchFlags&^uint16(xtConntrackStateFlag|xtConntrackStateAliasFlag) == 0
 	if !ct.MatchesState {
 		return ct, decoded
 	}

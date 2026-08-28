@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/MemorManeo/whyopen/internal/facts"
+	"github.com/MemorManeo/whyopen/internal/model"
 	"github.com/google/nftables/expr"
 	"github.com/google/nftables/xt"
 )
@@ -227,6 +228,85 @@ func TestDecodedListsAreInAFixedOrder(t *testing.T) {
 		again := ConvertExprs([]expr.Any{&expr.Match{Name: "addrtype", Rev: 1, Info: &xt.AddrTypeV1{Dest: 0x3F}}})
 		if s := strings.Join(again[0].Xt.AddrType.DestTypes, ","); s != wantTypes {
 			t.Fatalf("run %d: dest types = %q, want %q", i, s, wantTypes)
+		}
+	}
+}
+
+// RULING 25: libxt_state sets XT_CONNTRACK_STATE_ALIAS (0x2000) alongside
+// XT_CONNTRACK_STATE so iptables can print the match back as "-m state".
+// It constrains nothing, so "-m state --state RELATED,ESTABLISHED", which
+// arrives as conntrack rev 3 with MatchFlags 0x2001, must decode normally.
+func TestConvertConntrackStateAliasDecodesNormally(t *testing.T) {
+	info := &xt.ConntrackMtinfo3{}
+	info.MatchFlags = 0x2001 // XT_CONNTRACK_STATE | XT_CONNTRACK_STATE_ALIAS
+	info.StateMask = 0x6     // related, established
+	got := ConvertExprs([]expr.Any{&expr.Match{Name: "conntrack", Rev: 3, Info: info}})
+
+	if !got[0].Xt.Decoded {
+		t.Fatalf("a -m state match reported as undecoded: %+v", got[0].Xt)
+	}
+	ct := got[0].Xt.Conntrack
+	if ct == nil || !ct.MatchesState {
+		t.Fatalf("conntrack = %+v, want the state half decoded", ct)
+	}
+	if s := strings.Join(ct.States, ","); s != "established,related" {
+		t.Fatalf("states = %q, want established,related", s)
+	}
+}
+
+// RULING 27: nft's log statement writes a line and falls through. It cannot
+// constrain a match or terminate a rule, so poisoning on it is a false
+// unknown.
+func TestConvertNativeLogIsTransparent(t *testing.T) {
+	got := ConvertExprs([]expr.Any{&expr.Log{}})
+	if got[0].Kind != facts.ExprOther || got[0].Note != "log" {
+		t.Fatalf("log = %+v, want ExprOther with note \"log\"", got[0])
+	}
+}
+
+// RULING 25 end to end, the shape the reviewer measured: an input chain with
+// policy drop whose rules are written with "-m state". Both must resolve, in
+// both directions, and neither may come back unknown.
+func TestStateShapedRulesResolveThroughEvaluate(t *testing.T) {
+	stateMatch := func(mask uint16) expr.Any {
+		info := &xt.ConntrackMtinfo3{}
+		info.MatchFlags = 0x2001
+		info.StateMask = mask
+		return &expr.Match{Name: "conntrack", Rev: 3, Info: info}
+	}
+	accept := &expr.Verdict{Kind: expr.VerdictAccept}
+
+	f := facts.Facts{
+		SchemaVersion: facts.SchemaVersion,
+		Host: facts.Host{Interfaces: []facts.Interface{{Name: "eth0", Index: 2, Up: true,
+			Addresses: []facts.Addr{{IP: "203.0.113.10", Prefix: 24, Family: "ip", Scope: "global"}}}}},
+		Sockets: []facts.Socket{
+			{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 22, Unit: "ssh.service"},
+			{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 5432, Unit: "postgres.service"},
+		},
+		Ruleset: facts.Ruleset{Tables: []facts.Table{{Family: "ip", Name: "filter", Chains: []facts.Chain{{
+			Name: "INPUT", Base: true, Hook: "input", Priority: 0, Policy: "drop",
+			Rules: []facts.Rule{
+				// -m state --state RELATED,ESTABLISHED -j ACCEPT
+				{Handle: 1, Exprs: ConvertExprs([]expr.Any{stateMatch(0x6), accept})},
+				// -p tcp --dport 22 -m state --state NEW -j ACCEPT
+				{Handle: 2, Exprs: ConvertExprs([]expr.Any{
+					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x00, 0x16}},
+					stateMatch(0x8), accept,
+				})},
+			},
+		}}}}},
+	}
+
+	want := map[uint16]string{22: "reachable", 5432: "filtered"}
+	vs := model.Evaluate(f, model.InternetZone())
+	if len(vs) != 2 {
+		t.Fatalf("got %d verdicts, want 2: %+v", len(vs), vs)
+	}
+	for _, v := range vs {
+		if v.Result != want[v.Endpoint.Port] {
+			t.Fatalf("port %d = %q (%s), want %q", v.Endpoint.Port, v.Result, v.Reason, want[v.Endpoint.Port])
 		}
 	}
 }
