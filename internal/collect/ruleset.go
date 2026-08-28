@@ -17,12 +17,12 @@ func Ruleset() (facts.Ruleset, []facts.Warning, error) {
 
 	c, err := nftables.New()
 	if err != nil {
-		return facts.Ruleset{}, warns, fmt.Errorf("open netlink: %w", err)
+		return facts.Ruleset{ReadFailed: true}, warns, fmt.Errorf("open netlink: %w", err)
 	}
 
 	tables, err := c.ListTables()
 	if err != nil {
-		return facts.Ruleset{}, warns, fmt.Errorf("list tables: %w", err)
+		return facts.Ruleset{ReadFailed: true}, warns, fmt.Errorf("list tables: %w", err)
 	}
 
 	var rs facts.Ruleset

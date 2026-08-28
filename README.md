@@ -43,9 +43,11 @@ global unicast address in that family, a jump loop past its depth bound. An
   nftables today and are covered).
 - Must run as **root** (or at least with `CAP_NET_ADMIN`) to list the
   ruleset over netlink and to attribute every listening socket to a
-  process. Run unprivileged and whyopen still produces a table, but the
-  ruleset and some sockets come back empty, and the report says so under
-  `warnings`.
+  process. Run unprivileged and whyopen still lists every listener it can
+  find, but it cannot read the ruleset, so it refuses to guess: every
+  verdict comes back `unknown`, the reason and a `warnings` block both say
+  why, and `check` exits 3 (a tool error, not a clean run) so cron and CI
+  notice.
 - **whyopen is read-only.** It never creates, changes, or deletes an
   nftables rule, a socket, or anything else on the host. It only reads.
 

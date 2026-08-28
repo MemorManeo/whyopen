@@ -50,8 +50,24 @@ type Verdict struct {
 // Evaluate returns one verdict per endpoint per address family it serves.
 func Evaluate(f facts.Facts, zone Zone) []Verdict {
 	var out []Verdict
-	for _, ep := range endpoints(f) {
-		for _, fam := range familiesFor(ep, f.Host.Sysctls) {
+	eps := endpoints(f)
+	wildcardIPv4 := wildcardIPv4Keys(eps)
+	for _, ep := range eps {
+		for _, fam := range familiesFor(ep, f.Host.Sysctls, wildcardIPv4) {
+			if f.Ruleset.ReadFailed {
+				// The ruleset could not be read at all, so Traverse would
+				// see no base chains and default to accept: a confident
+				// guess dressed up as a fact. Every endpoint is still
+				// listed, honestly marked unknown, before any traversal
+				// work happens.
+				out = append(out, Verdict{
+					Endpoint: ep,
+					Family:   fam,
+					Result:   "unknown",
+					Reason:   "the nftables ruleset could not be read, so no reachability conclusion is possible; whyopen needs root (or CAP_NET_ADMIN) to read it",
+				})
+				continue
+			}
 			out = append(out, evaluateOne(f, zone, ep, fam))
 		}
 	}
@@ -125,11 +141,36 @@ func socketOwner(s facts.Socket) string {
 // must never apply to a Docker publish. Docker's default "-p 8080:80" emits
 // two separate publishes, one for 0.0.0.0 and one for ::; expanding the ::
 // entry here would report the same IPv4 exposure as reachable twice.
-func familiesFor(e Endpoint, sc facts.Sysctls) []string {
+//
+// The global bind_v6_only sysctl only sets the default for a new socket; a
+// process can still override it per-socket with IPV6_V6ONLY, which is the
+// only way a 0.0.0.0 socket and a :: socket coexist on the same port. When
+// that sibling is present, the :: socket must not also expand into an IPv4
+// verdict: the real IPv4 exposure is already reported by the 0.0.0.0
+// socket, and attributing it to the :: bind instead would both duplicate
+// the row and misname the culprit.
+func familiesFor(e Endpoint, sc facts.Sysctls, wildcardIPv4 map[string]bool) []string {
 	if e.Kind == "socket" && e.Family == "ip6" && (e.BindIP == "::" || e.BindIP == "[::]") && !sc.BindV6Only {
+		if wildcardIPv4[fmt.Sprintf("%s/%d", e.Proto, e.Port)] {
+			return []string{"ip6"}
+		}
 		return []string{"ip", "ip6"}
 	}
 	return []string{e.Family}
+}
+
+// wildcardIPv4Keys is built once per Evaluate call so familiesFor does not
+// rescan the whole endpoint set for every socket it considers. It records
+// every proto/port that already has a genuine 0.0.0.0 (wildcard) IPv4
+// socket endpoint.
+func wildcardIPv4Keys(eps []Endpoint) map[string]bool {
+	keys := make(map[string]bool)
+	for _, e := range eps {
+		if e.Kind == "socket" && e.Family == "ip" && e.BindIP == "0.0.0.0" {
+			keys[fmt.Sprintf("%s/%d", e.Proto, e.Port)] = true
+		}
+	}
+	return keys
 }
 
 // pubAddr is one destination the internet can send a packet to: a global

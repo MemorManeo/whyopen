@@ -146,5 +146,12 @@ func runCheck(args []string) int {
 		return exitOK
 	}
 	report.Table(os.Stdout, verdicts, f.Warnings)
+	if f.Ruleset.ReadFailed {
+		// The table above already told the operator every verdict is
+		// unknown and why; the exit code is what cron and CI actually
+		// read, so this is a tool error (exit 3), not a clean run.
+		fmt.Fprintln(os.Stderr, "the nftables ruleset could not be read, so every verdict above is unknown; re-run as root")
+		return exitError
+	}
 	return exitOK
 }

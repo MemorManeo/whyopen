@@ -70,6 +70,11 @@ type Socket struct {
 
 type Ruleset struct {
 	Tables []Table `json:"tables"`
+	// ReadFailed means the ruleset could not be read at all (typically a
+	// missing CAP_NET_ADMIN), not that the host genuinely has no rules. A
+	// zero-value Ruleset with ReadFailed unset means "read successfully,
+	// found nothing" for every document written before this field existed.
+	ReadFailed bool `json:"read_failed,omitempty"`
 }
 
 type Table struct {

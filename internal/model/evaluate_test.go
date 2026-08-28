@@ -349,3 +349,80 @@ func TestDockerDefaultDualEntryPublishYieldsOneIPv4Verdict(t *testing.T) {
 		t.Fatalf("got %d ip verdicts, want exactly 1: %+v", ipCount, vs)
 	}
 }
+
+// RULING 22: familiesFor expanded a :: bind across both families whenever
+// bind_v6_only=0, without checking for a sibling 0.0.0.0 socket on the same
+// proto/port. Two such sockets can only coexist via a per-socket
+// IPV6_V6ONLY override, which the global sysctl cannot describe; the real
+// IPv4 exposure belongs to the 0.0.0.0 socket, not the :: one, so expanding
+// the :: socket too fabricates a duplicate IPv4 verdict attributed to the
+// wrong bind.
+func TestDualStackSocketWithIPv4SiblingIsNotDuplicated(t *testing.T) {
+	f := hostFacts()
+	f.Host.Interfaces[0].Addresses = append(f.Host.Interfaces[0].Addresses,
+		facts.Addr{IP: "2001:db8::10", Prefix: 64, Family: "ip6", Scope: "global"})
+	filter := ufwFilter()
+	filter.Chains[0].Rules = append(filter.Chains[0].Rules, acceptRule(13))
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter}}
+	f.Sockets = []facts.Socket{
+		{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 22, Unit: "ssh.service"},
+		{Family: "ip6", Proto: "tcp", BindIP: "::", Port: 22, Process: "sshd-v6"},
+	}
+
+	vs := Evaluate(f, InternetZone())
+	if len(vs) != 2 {
+		t.Fatalf("got %d verdicts, want exactly 2 (one per family): %+v", len(vs), vs)
+	}
+	var ipv4, ipv6 *Verdict
+	for i := range vs {
+		switch vs[i].Family {
+		case "ip":
+			ipv4 = &vs[i]
+		case "ip6":
+			ipv6 = &vs[i]
+		}
+	}
+	if ipv4 == nil || ipv6 == nil {
+		t.Fatalf("want one ip and one ip6 verdict, got %+v", vs)
+	}
+	if ipv4.Endpoint.BindIP != "0.0.0.0" {
+		t.Fatalf("ipv4 verdict attributed to bind %q, want the real 0.0.0.0 socket", ipv4.Endpoint.BindIP)
+	}
+	if ipv6.Endpoint.BindIP != "::" {
+		t.Fatalf("ipv6 verdict attributed to bind %q, want ::", ipv6.Endpoint.BindIP)
+	}
+}
+
+// RULING 23: an unreadable ruleset must never produce a confident verdict.
+// With no base chains to traverse, Traverse defaults to accept, which
+// finish() turns into a false "reachable" -- exactly the guess this tool
+// exists to prevent.
+func TestUnreadableRulesetYieldsUnknownForEveryEndpoint(t *testing.T) {
+	f := hostFacts()
+	f.Ruleset = facts.Ruleset{ReadFailed: true}
+	f.Sockets = []facts.Socket{
+		{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 22, Unit: "ssh.service"},
+	}
+
+	vs := Evaluate(f, InternetZone())
+	if len(vs) != 1 {
+		t.Fatalf("got %d verdicts, want 1: %+v", len(vs), vs)
+	}
+	if vs[0].Result != "unknown" || vs[0].Reason == "" {
+		t.Fatalf("got %+v, want an explained unknown verdict when the ruleset could not be read", vs[0])
+	}
+}
+
+// The same host with the ruleset readable behaves exactly as before.
+func TestReadableRulesetStillEvaluatesNormally(t *testing.T) {
+	f := hostFacts()
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{ufwFilter()}}
+	f.Sockets = []facts.Socket{
+		{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 22, Unit: "ssh.service"},
+	}
+
+	vs := Evaluate(f, InternetZone())
+	if len(vs) != 1 || vs[0].Result != "filtered" {
+		t.Fatalf("got %+v, want filtered by the input drop policy, same as before this ruling", vs)
+	}
+}

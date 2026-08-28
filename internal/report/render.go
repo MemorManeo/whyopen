@@ -14,7 +14,8 @@ import (
 // It is for human eyes only: whyopen never re-emits a rule.
 func RenderRule(r facts.Rule) string {
 	var parts []string
-	var pending string // what the next cmp is comparing against
+	var pending string     // what the next cmp is comparing against
+	var pendingMask string // hex mask from a bitwise expr between payload and cmp, e.g. a subnet match
 
 	for _, e := range r.Exprs {
 		switch e.Kind {
@@ -22,8 +23,15 @@ func RenderRule(r facts.Rule) string {
 			pending = e.Meta.Key
 		case facts.ExprPayload:
 			pending = payloadName(e.Payload)
+		case facts.ExprBitwise:
+			pendingMask = e.Bitwise.Mask
 		case facts.ExprCmp:
 			if pending == "" {
+				continue
+			}
+			if pendingMask != "" {
+				parts = append(parts, maskedCmp(pending, e.Cmp.Data, pendingMask))
+				pending, pendingMask = "", ""
 				continue
 			}
 			parts = append(parts, fmt.Sprintf("%s %s %s", pending, opSymbol(e.Cmp.Op), cmpValue(pending, e.Cmp.Data)))
@@ -96,6 +104,45 @@ func cmpValue(field, data string) string {
 		}
 	}
 	return "0x" + data
+}
+
+// maskedCmp renders a payload/bitwise/cmp triple: the standard nft shape for
+// a subnet or masked match. A contiguous mask (all ones then all zeros, read
+// from the start) is a prefix and renders as CIDR; anything else renders as
+// an explicit masked equality, because whyopen must never claim more
+// precision than the rule actually has.
+func maskedCmp(field, data, maskHex string) string {
+	mask, errM := hex.DecodeString(maskHex)
+	val, errD := hex.DecodeString(data)
+	if errM != nil || errD != nil || len(mask) != len(val) {
+		return fmt.Sprintf("%s & 0x%s == 0x%s", field, maskHex, data)
+	}
+	if n, ok := prefixLen(mask); ok {
+		return fmt.Sprintf("%s %s/%d", field, cmpValue(field, data), n)
+	}
+	return fmt.Sprintf("%s & 0x%s == 0x%s", field, maskHex, data)
+}
+
+// prefixLen reports the length of the leading run of set bits in mask,
+// provided every bit after the first zero is also zero. That shape is what
+// a CIDR prefix looks like as a bitmask; anything else (a hole, a mask that
+// starts with a zero bit) is not representable as a prefix length.
+func prefixLen(mask []byte) (int, bool) {
+	n := 0
+	seenZero := false
+	for _, b := range mask {
+		for i := 7; i >= 0; i-- {
+			if b&(1<<uint(i)) != 0 {
+				if seenZero {
+					return 0, false
+				}
+				n++
+			} else {
+				seenZero = true
+			}
+		}
+	}
+	return n, true
 }
 
 func renderXt(x *facts.XtExpr) string {
