@@ -191,7 +191,7 @@ func xtExpr(pkt *Packet, x *facts.XtExpr) (Outcome, Action, bool) {
 			if err != nil {
 				return OutcomeUnknown, none, false
 			}
-			return OutcomeMatch, Action{Kind: "dnat", DNAT: &dnat{IP: ip, MinPort: x.DNAT.MinPort}}, true
+			return OutcomeMatch, Action{Kind: "dnat", DNAT: &dnat{IP: ip, Port: x.DNAT.MinPort}}, true
 		case "REJECT":
 			return OutcomeMatch, Action{Kind: "drop"}, true
 		case "LOG":

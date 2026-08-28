@@ -29,9 +29,13 @@ type Action struct {
 	DNAT  *dnat
 }
 
+// dnat is the single resolved rewrite target for a matched DNAT rule. Unlike
+// facts.DNATInfo, which genuinely describes a port range (MinPort/MaxPort),
+// a dnat value names one concrete port whyopen will follow, so the field is
+// just Port.
 type dnat struct {
-	IP      netip.Addr
-	MinPort uint16
+	IP   netip.Addr
+	Port uint16
 }
 
 type Outcome int

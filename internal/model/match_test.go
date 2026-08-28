@@ -119,7 +119,7 @@ func TestDNATTargetAction(t *testing.T) {
 			DNAT: &facts.DNATInfo{MinIP: "172.20.0.2", MaxIP: "172.20.0.2", MinPort: 2222, MaxPort: 2222}}},
 	}}
 	out, act := MatchRule(testPacket(), rule)
-	if out != OutcomeMatch || act.Kind != "dnat" || act.DNAT.MinPort != 2222 {
+	if out != OutcomeMatch || act.Kind != "dnat" || act.DNAT.Port != 2222 {
 		t.Fatalf("out=%v act=%+v, want a dnat action", out, act)
 	}
 }
