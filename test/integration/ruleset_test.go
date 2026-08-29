@@ -2,7 +2,10 @@
 
 package integration
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // listenIn starts a listener bound to bindIP inside the namespace so the
 // port has a real socket behind it, and returns once it is up.
@@ -58,7 +61,13 @@ func TestUFWShapedRulesetAcceptsOnlyTheAllowedPort(t *testing.T) {
 // subnet, a DOCKER chain in nat reached from PREROUTING for locally destined
 // traffic, and a DOCKER chain in filter reached from FORWARD. The bridge name
 // is 15 bytes, the kernel maximum, matching the shape of a real br-<hash>.
-func dockerShapedNetns(t *testing.T) (ns string, bridge string) {
+//
+// forwarding controls net.ipv4.ip_forward inside the namespace. Docker
+// enables forwarding on every real host it runs on, so tests exercising a
+// genuine publish pass true; a namespace left at the kernel default of 0
+// models a machine Docker has never touched, which only the negative
+// forwarding-disabled test wants.
+func dockerShapedNetns(t *testing.T, forwarding bool) (ns string, bridge string) {
 	t.Helper()
 	ns = newNetns(t)
 	bridge = "br-000000000001"
@@ -66,6 +75,17 @@ func dockerShapedNetns(t *testing.T) (ns string, bridge string) {
 	nsRun(t, ns, "ip", "link", "add", bridge, "type", "bridge")
 	nsRun(t, ns, "ip", "addr", "add", "172.20.0.1/16", "dev", bridge)
 	nsRun(t, ns, "ip", "link", "set", bridge, "up")
+
+	if forwarding {
+		// A fresh network namespace starts with net.ipv4.ip_forward at the
+		// kernel default of 0, not at whatever the host's root namespace
+		// has. Without this, a DNAT'd packet to a non-local address never
+		// reaches the forward hook and every publish test would report
+		// filtered for the forwarding-disabled reason instead of the thing
+		// each test actually means to exercise. Do not remove this as dead
+		// weight: it is load-bearing, not noise.
+		nsRun(t, ns, "sysctl", "-w", "net.ipv4.ip_forward=1")
+	}
 
 	nsRun(t, ns, "iptables", "-t", "nat", "-N", "DOCKER")
 	nsRun(t, ns, "iptables", "-t", "nat", "-A", "PREROUTING",
@@ -103,9 +123,9 @@ func publishOnAllInterfaces(t *testing.T, ns, bridge, hostPort, containerIP, con
 // a real host is exactly what this listener stands in for.
 func TestPublishOnAllInterfacesIsReachableDespiteInputDeny(t *testing.T) {
 	requireRoot(t)
-	requireTools(t, "ip", "iptables", "python3")
+	requireTools(t, "ip", "iptables", "python3", "sysctl")
 
-	ns, bridge := dockerShapedNetns(t)
+	ns, bridge := dockerShapedNetns(t, true)
 	listenIn(t, ns, "0.0.0.0", "5432")
 	nsRun(t, ns, "iptables", "-P", "INPUT", "DROP")
 	nsRun(t, ns, "iptables", "-P", "FORWARD", "DROP")
@@ -139,9 +159,9 @@ func TestPublishOnAllInterfacesIsReachableDespiteInputDeny(t *testing.T) {
 // to evaluate at all.
 func TestDockerUserDenyOverridesThePublish(t *testing.T) {
 	requireRoot(t)
-	requireTools(t, "ip", "iptables", "python3")
+	requireTools(t, "ip", "iptables", "python3", "sysctl")
 
-	ns, bridge := dockerShapedNetns(t)
+	ns, bridge := dockerShapedNetns(t, true)
 	listenIn(t, ns, "0.0.0.0", "5432")
 	nsRun(t, ns, "iptables", "-P", "INPUT", "DROP")
 	nsRun(t, ns, "iptables", "-P", "FORWARD", "DROP")
@@ -166,9 +186,9 @@ func TestDockerUserDenyOverridesThePublish(t *testing.T) {
 // of an endpoint for 5432 in a namespace with no Docker daemon.
 func TestPublishOnLoopbackIsFiltered(t *testing.T) {
 	requireRoot(t)
-	requireTools(t, "ip", "iptables", "python3")
+	requireTools(t, "ip", "iptables", "python3", "sysctl")
 
-	ns, bridge := dockerShapedNetns(t)
+	ns, bridge := dockerShapedNetns(t, true)
 	listenIn(t, ns, "127.0.0.1", "5432")
 	nsRun(t, ns, "iptables", "-P", "INPUT", "DROP")
 	nsRun(t, ns, "iptables", "-P", "FORWARD", "DROP")
@@ -182,5 +202,34 @@ func TestPublishOnLoopbackIsFiltered(t *testing.T) {
 	}
 	if v.Result != "filtered" {
 		t.Fatalf("loopback-bound publish = %s, want filtered: %s", v.Result, v.Reason)
+	}
+}
+
+// The forwarding check has, until now, only ever run against a facts
+// document assembled by hand in Go. This proves it against a real kernel: a
+// namespace left at the default of net.ipv4.ip_forward=0 models a host
+// Docker has never touched. The packet is still DNAT'd in prerouting, since
+// that decision does not consult the sysctl, but the rewritten destination
+// is off-host and the kernel never routes it on, so it must be reported
+// filtered for that reason rather than reachable.
+func TestPublishIsFilteredWhenForwardingIsDisabled(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "iptables", "python3")
+
+	ns, bridge := dockerShapedNetns(t, false)
+	listenIn(t, ns, "0.0.0.0", "5432")
+	nsRun(t, ns, "iptables", "-P", "INPUT", "DROP")
+	nsRun(t, ns, "iptables", "-P", "FORWARD", "DROP")
+	publishOnAllInterfaces(t, ns, bridge, "5432", "172.20.0.2", "5432")
+
+	v := verdictFor(evaluate(collectIn(t, ns)), 5432, "ip")
+	if v == nil {
+		t.Fatal("no verdict for the published port")
+	}
+	if v.Result != "filtered" {
+		t.Fatalf("published port = %s, want filtered while forwarding is disabled: %s", v.Result, v.Reason)
+	}
+	if !strings.Contains(v.Reason, "forward") {
+		t.Fatalf("reason does not mention forwarding, so this may be filtered for the wrong cause: %s", v.Reason)
 	}
 }
