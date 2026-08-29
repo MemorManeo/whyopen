@@ -190,6 +190,7 @@ type XtExpr struct {
 	DNAT      *DNATInfo      `json:"dnat,omitempty"`
 	Conntrack *ConntrackInfo `json:"conntrack,omitempty"`
 	AddrType  *AddrTypeInfo  `json:"addrtype,omitempty"`
+	Recent    *RecentInfo    `json:"recent,omitempty"`
 }
 
 type DNATInfo struct {
@@ -212,6 +213,19 @@ type AddrTypeInfo struct {
 	SourceTypes  []string `json:"source_types,omitempty"`
 	InvertDest   bool     `json:"invert_dest"`
 	InvertSource bool     `json:"invert_source"`
+}
+
+// RecentInfo is an xt recent match. Mode is set, update, check, rcheck or
+// remove. whyopen's synthetic packet is always the first packet from a source
+// it has never seen, which is what makes the modes decidable: set records and
+// always matches, the checking modes cannot match an empty list, and remove
+// has nothing to remove.
+type RecentInfo struct {
+	Mode     string `json:"mode"`
+	Seconds  uint32 `json:"seconds,omitempty"`
+	HitCount uint32 `json:"hit_count,omitempty"`
+	Invert   bool   `json:"invert,omitempty"`
+	Name     string `json:"name,omitempty"`
 }
 
 type Docker struct {

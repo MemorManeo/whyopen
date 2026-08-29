@@ -303,3 +303,38 @@ func TestPublishIsFilteredWhenForwardingIsDisabled(t *testing.T) {
 		t.Fatalf("reason does not mention forwarding, so this may be filtered for the wrong cause: %s", v.Reason)
 	}
 }
+
+// The headline claim of this plan: ufw limit ssh's two rules, --set with no
+// verdict and --update carrying the drop, decode and resolve port 22 as
+// reachable instead of unknown. Unlike TestConvertRecentSetAndUpdate, which
+// decodes a hex constant frozen from one past capture, this asserts the
+// decoder against a payload the kernel writes right now, so a future kernel
+// or iptables version that changed the layout would show up here even if
+// nobody thought to recapture the hex constants.
+func TestUFWLimitSSHResolvesReachable(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "iptables", "python3")
+
+	ns := newNetns(t)
+	listenIn(t, ns, "0.0.0.0", "22")
+
+	nsRun(t, ns, "iptables", "-P", "INPUT", "DROP")
+	nsRun(t, ns, "iptables", "-A", "INPUT", "-p", "tcp", "--dport", "22",
+		"-m", "conntrack", "--ctstate", "NEW", "-m", "recent", "--set", "--name", "SSH")
+	nsRun(t, ns, "iptables", "-A", "INPUT", "-p", "tcp", "--dport", "22",
+		"-m", "conntrack", "--ctstate", "NEW",
+		"-m", "recent", "--update", "--seconds", "30", "--hitcount", "6", "--name", "SSH",
+		"-j", "DROP")
+	nsRun(t, ns, "iptables", "-A", "INPUT", "-p", "tcp", "--dport", "22", "-j", "ACCEPT")
+
+	v := verdictFor(evaluate(collectIn(t, ns)), 22, "ip")
+	if v == nil {
+		t.Fatal("no verdict for port 22")
+	}
+	if v.Result != "reachable" {
+		t.Fatalf("port 22 = %s (%s), want reachable: whyopen's synthetic packet is a first "+
+			"connection from a source the recent list has never seen, so --set matches (and "+
+			"carries no verdict) and --update does not match, leaving the final ACCEPT to decide",
+			v.Result, v.Reason)
+	}
+}

@@ -382,3 +382,49 @@ func TestMatchBitwiseSubnet(t *testing.T) {
 		t.Fatalf("out=%v, want no match: 203.0.113.10 is not in 10.0.0.0/8", out)
 	}
 }
+
+// The two rules ufw limit ssh emits. A first packet from an unseen source
+// matches the --set rule (which constrains nothing and carries no verdict)
+// and does not match the --update rule, so the port resolves rather than
+// poisoning the verdict.
+func TestRecentSetMatchesAndUpdateDoesNot(t *testing.T) {
+	set := facts.Rule{Handle: 1, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent", Decoded: true,
+			Recent: &facts.RecentInfo{Mode: "set", Name: "SSH"}}},
+	}}
+	if out, _ := MatchRule(testPacket(), set); out != OutcomeMatch {
+		t.Fatalf("--set = %v, want match", out)
+	}
+
+	update := facts.Rule{Handle: 2, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent", Decoded: true,
+			Recent: &facts.RecentInfo{Mode: "update", Seconds: 30, HitCount: 6, Name: "SSH"}}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "drop"}},
+	}}
+	if out, _ := MatchRule(testPacket(), update); out != OutcomeNoMatch {
+		t.Fatalf("--update = %v, want no match for a first packet from an unseen source", out)
+	}
+}
+
+func TestRecentInvertFlips(t *testing.T) {
+	r := facts.Rule{Handle: 3, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent", Decoded: true,
+			Recent: &facts.RecentInfo{Mode: "update", Invert: true, Name: "SSH"}}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, _ := MatchRule(testPacket(), r); out != OutcomeMatch {
+		t.Fatalf("inverted --update = %v, want match", out)
+	}
+}
+
+// An undecoded recent must still poison, so an unfamiliar revision cannot
+// silently resolve.
+func TestUndecodedRecentIsStillUnknown(t *testing.T) {
+	r := facts.Rule{Handle: 4, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent"}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "drop"}},
+	}}
+	if out, _ := MatchRule(testPacket(), r); out != OutcomeUnknown {
+		t.Fatalf("undecoded recent = %v, want unknown", out)
+	}
+}

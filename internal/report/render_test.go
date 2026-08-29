@@ -91,3 +91,30 @@ func TestRenderRuleShowsUnresolvedExpressions(t *testing.T) {
 		t.Fatalf("RenderRule = %q, want the unresolved expression named", got)
 	}
 }
+
+// A decoded recent match renders with the iptables option spelling, so
+// --explain shows exactly what decided port 22 on a stock UFW host.
+func TestRenderRuleShowsDecodedRecentMatch(t *testing.T) {
+	r := facts.Rule{Handle: 41, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent", Decoded: true,
+			Recent: &facts.RecentInfo{Mode: "update", Seconds: 30, HitCount: 6, Name: "SSH"}}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "drop"}},
+	}}
+	got := RenderRule(r)
+	if !strings.Contains(got, "recent --update --seconds 30 --hitcount 6 --name SSH") {
+		t.Fatalf("RenderRule = %q, want the recent match rendered", got)
+	}
+}
+
+// An undecoded recent match must still say so, not disappear or render as
+// though it were fully understood.
+func TestRenderRuleShowsUndecodedRecentMatch(t *testing.T) {
+	r := facts.Rule{Handle: 42, Exprs: []facts.Expr{
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent"}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "drop"}},
+	}}
+	got := RenderRule(r)
+	if !strings.Contains(got, "match recent (undecoded)") {
+		t.Fatalf("RenderRule = %q, want the undecoded recent match named", got)
+	}
+}

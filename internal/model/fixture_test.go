@@ -18,6 +18,20 @@ import (
 // byte length so that rule data comparing an interface name still compares
 // the same number of bytes. The redaction was verified to leave every
 // verdict unchanged.
+//
+// The fixture records what the binary that captured it could see, not what
+// the binary reading it today can decode: the collector discards the raw
+// payload of any extension it cannot decode, so an xt match that arrived
+// undecoded is serialized as {"decoded": false} with nothing left to
+// re-decode later. That is why the two "recent" matches on port 22 (the
+// two rules ufw limit ssh emits) still resolve unknown below even now that
+// the evaluator understands xt recent: this file predates that decoder, and
+// no decoder, however correct, can recover bytes that were never kept. A
+// facts document is in this sense lossy for anything the capturing build
+// could not decode; see docs/superpowers/plans/NEXT.md's "Smaller items"
+// for the follow-up (preserve the raw payload) that this fixture motivated.
+// TestUFWLimitSSHResolvesReachable in test/integration/ruleset_test.go
+// proves the decoder itself against a live kernel instead.
 const fixturePath = "../../testdata/facts/ufw-docker-host.json"
 
 func loadFixture(t *testing.T) facts.Facts {
@@ -77,9 +91,13 @@ func TestFixtureOnlyWebPortsAreReachable(t *testing.T) {
 	}
 }
 
-// Both unknowns are ssh, and both blame the one extension whyopen does not
-// decode. If this starts failing, either recent got decoded (delete this
-// test) or something else regressed into unknown (do not delete it).
+// Both unknowns are ssh, and both still blame an undecoded "recent" match,
+// even though the evaluator can decode xt recent now: this fixture's copy
+// of that match was captured before the decoder existed and carries no raw
+// payload to decode (see the fixturePath comment above). If this starts
+// failing, either the fixture was recaptured with a build that can decode
+// recent (delete this test) or something else regressed into unknown (do
+// not delete it).
 func TestFixtureUnknownsAreOnlySSHRateLimiting(t *testing.T) {
 	for _, v := range Evaluate(loadFixture(t), InternetZone()) {
 		if v.Result != "unknown" {

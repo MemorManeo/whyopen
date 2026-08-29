@@ -311,6 +311,24 @@ func xtExpr(pkt *Packet, x *facts.XtExpr) (Outcome, Action, bool) {
 		}
 		return OutcomeNoMatch, none, true
 
+	case "recent":
+		if !x.Decoded || x.Recent == nil {
+			return OutcomeUnknown, none, false
+		}
+		// whyopen's synthetic packet is always a first connection from a
+		// source the recent list has never seen, which collapses every
+		// mode to one test: set records the source and always matches;
+		// every checking mode (check, rcheck, update) cannot match an
+		// empty list; remove has nothing to remove. Only "set" hits.
+		hit := x.Recent.Mode == "set"
+		if x.Recent.Invert {
+			hit = !hit
+		}
+		if hit {
+			return OutcomeMatch, none, true
+		}
+		return OutcomeNoMatch, none, true
+
 	case "icmp", "icmp6":
 		// Cannot match a TCP or UDP packet, whatever its payload says.
 		return OutcomeNoMatch, none, true

@@ -5,6 +5,8 @@
 package collect
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -73,6 +75,31 @@ var addrTypeNames = []bitName{
 	{0x10, "anycast"},
 	{0x20, "multicast"},
 }
+
+// xt recent check_set bits, captured from a live kernel and recorded in
+// docs/decisions/0003-xt-recent-layout.md: --set sets 0x02, --update sets
+// 0x04, --rcheck sets 0x01. --remove's bit value was never captured (the
+// pattern the other three follow would put it at 0x08, but that is an
+// inference, not evidence), so whyopen does not guess a fourth pattern: a
+// --remove rule is left undecoded rather than assumed.
+const (
+	xtRecentCheckBit  = 0x1
+	xtRecentSetBit    = 0x2
+	xtRecentUpdateBit = 0x4
+)
+
+// xt recent payload layout at revision 1, captured from a live kernel and
+// recorded in docs/decisions/0003-xt-recent-layout.md. Any other revision,
+// or a different length at revision 1, is not covered by that capture.
+const (
+	xtRecentRev1Len     = 232
+	xtRecentSecondsOff  = 0
+	xtRecentHitCountOff = 4
+	xtRecentCheckSetOff = 8
+	xtRecentInvertOff   = 9
+	xtRecentNameOff     = 10
+	xtRecentNameLen     = 200
+)
 
 // ConvertExprs maps netlink expressions onto whyopen's serializable union.
 // An xt extension without a typed decoder is preserved by name with Decoded
@@ -184,8 +211,59 @@ func convertXt(kind, name string, rev uint32, info xt.InfoAny) *facts.XtExpr {
 			InvertDest:   i.InvertDest,
 			InvertSource: i.InvertSource,
 		}
+	case *xt.Unknown:
+		// The nftables library has no dedicated type for "recent", so its
+		// payload arrives here as raw bytes like any other extension it
+		// cannot name. Everything else that lands in this case stays
+		// undecoded, exactly as it did before this case existed.
+		if name == "recent" {
+			x.Recent, x.Decoded = recentInfo(rev, []byte(*i))
+		}
 	}
 	return x
+}
+
+// recentInfo decodes an xt recent match payload at the layout captured in
+// docs/decisions/0003-xt-recent-layout.md: seconds and hit_count as
+// little-endian u32, a one-byte mode flag, a one-byte invert flag, then a
+// NUL-terminated name. Only revision 1 at the captured length decodes, and
+// only when check_set is one of the three exact bit patterns the capture
+// confirmed; any other value, including a --remove rule, is left undecoded
+// rather than guessed.
+func recentInfo(rev uint32, data []byte) (*facts.RecentInfo, bool) {
+	if rev != 1 || len(data) != xtRecentRev1Len {
+		return nil, false
+	}
+	mode, ok := recentModeName(data[xtRecentCheckSetOff])
+	if !ok {
+		return nil, false
+	}
+	name := data[xtRecentNameOff : xtRecentNameOff+xtRecentNameLen]
+	if i := bytes.IndexByte(name, 0); i >= 0 {
+		name = name[:i]
+	}
+	return &facts.RecentInfo{
+		Mode:     mode,
+		Seconds:  binary.LittleEndian.Uint32(data[xtRecentSecondsOff:]),
+		HitCount: binary.LittleEndian.Uint32(data[xtRecentHitCountOff:]),
+		Invert:   data[xtRecentInvertOff] != 0,
+		Name:     string(name),
+	}, true
+}
+
+// recentModeName maps a check_set byte to the xt recent mode it names. Only
+// the three bit patterns the capture confirmed are recognised; anything
+// else is not one of the five names whyopen models and must not be guessed.
+func recentModeName(checkSet byte) (string, bool) {
+	switch checkSet {
+	case xtRecentSetBit:
+		return "set", true
+	case xtRecentUpdateBit:
+		return "update", true
+	case xtRecentCheckBit:
+		return "rcheck", true
+	}
+	return "", false
 }
 
 func natRange(r xt.NatRange) *facts.DNATInfo {

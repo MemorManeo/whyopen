@@ -80,3 +80,12 @@ optional: a large share of the audience runs Raspberry Pi hardware.
 - Render IPv6 addresses properly in `--explain`; they currently print as hex.
 - Detect iptables-legacy more precisely: a registered table is not the same
   as a table with rules in it.
+- Preserve the raw payload of an extension the collector cannot decode,
+  instead of recording only `decoded: false` and discarding the bytes. A
+  facts document is currently lossy for anything the capturing build could
+  not decode: a later build with a better decoder cannot re-evaluate an
+  older snapshot at its improved fidelity, which weakens both the
+  collect-once-evaluate-later premise and the documented bug-report
+  workflow where a user attaches a facts document. Found while shipping xt
+  recent decoding, whose own golden fixture predates the decoder and so
+  could not benefit from it.

@@ -3,6 +3,7 @@
 package collect
 
 import (
+	"encoding/hex"
 	"net"
 	"strings"
 	"testing"
@@ -82,6 +83,89 @@ func TestConvertUnknownXtIsMarkedUndecoded(t *testing.T) {
 		if got[i].Xt.Name != want || got[i].Xt.Decoded {
 			t.Fatalf("expr %d = %+v, want undecoded %s", i, got[i].Xt, want)
 		}
+	}
+}
+
+// Bytes captured from a live kernel, recorded in docs/decisions/0003:
+// recent[0], `iptables -m recent --set --name SSH`, and recent[1],
+// `iptables -m recent --update --seconds 30 --hitcount 6 --name SSH`.
+const (
+	recentSetHex    = "0000000000000000020053534800554c54000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000"
+	recentUpdateHex = "1e00000006000000040053534800554c54000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000"
+	// recent[2], `iptables -m recent --rcheck --seconds 60 --name OTHER`.
+	recentRcheckHex = "3c0000000000000001004f544845520054000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000"
+)
+
+func mustDecodeXtUnknown(t *testing.T, h string) *xt.Unknown {
+	t.Helper()
+	b, err := hex.DecodeString(h)
+	if err != nil {
+		t.Fatalf("decode hex: %v", err)
+	}
+	u := xt.Unknown(b)
+	return &u
+}
+
+// The two rules ufw limit ssh emits. --set carries no seconds or hitcount;
+// --update carries both, and its name field still needs to decode to just
+// "SSH": iptables pre-fills the buffer with "DEFAULT\0", and --name SSH only
+// overwrites the first 4 bytes, leaving "ULT\0" in place right after the
+// name's own NUL terminator (see docs/decisions/0003).
+func TestConvertRecentSetAndUpdate(t *testing.T) {
+	setInfo := mustDecodeXtUnknown(t, recentSetHex)
+	got := ConvertExprs([]expr.Any{&expr.Match{Name: "recent", Rev: 1, Info: setInfo}})
+	r := got[0].Xt.Recent
+	if !got[0].Xt.Decoded || r == nil || r.Mode != "set" {
+		t.Fatalf("set variant decoded as %+v", got[0].Xt)
+	}
+	if r.Name != "SSH" {
+		t.Fatalf("set variant name = %q, want SSH (not the DEFAULT placeholder tail)", r.Name)
+	}
+
+	updInfo := mustDecodeXtUnknown(t, recentUpdateHex)
+	got = ConvertExprs([]expr.Any{&expr.Match{Name: "recent", Rev: 1, Info: updInfo}})
+	r = got[0].Xt.Recent
+	if r == nil || r.Mode != "update" || r.Seconds != 30 || r.HitCount != 6 {
+		t.Fatalf("update variant = %+v, want mode update, seconds 30, hitcount 6", r)
+	}
+}
+
+// The third confirmed bit pattern, captured from a --rcheck rule for
+// coverage rather than from either half of ufw limit ssh.
+func TestConvertRecentRcheck(t *testing.T) {
+	info := mustDecodeXtUnknown(t, recentRcheckHex)
+	got := ConvertExprs([]expr.Any{&expr.Match{Name: "recent", Rev: 1, Info: info}})
+	r := got[0].Xt.Recent
+	if !got[0].Xt.Decoded || r == nil || r.Mode != "rcheck" || r.Seconds != 60 || r.Name != "OTHER" {
+		t.Fatalf("rcheck variant = %+v, want mode rcheck, seconds 60, name OTHER", r)
+	}
+}
+
+// --remove's check_set bit value was never captured (docs/decisions/0003
+// only confirms 0x01, 0x02 and 0x04); the pattern the other three follow
+// would put it at 0x08, but that is an inference, not evidence. A payload
+// otherwise shaped like a real capture but carrying that unconfirmed byte
+// must stay undecoded rather than assume the pattern holds.
+func TestConvertRecentUnconfirmedCheckSetStaysUndecoded(t *testing.T) {
+	data, err := hex.DecodeString(recentSetHex)
+	if err != nil {
+		t.Fatalf("decode hex: %v", err)
+	}
+	data[8] = 0x08
+	info := xt.Unknown(data)
+	got := ConvertExprs([]expr.Any{&expr.Match{Name: "recent", Rev: 1, Info: &info}})
+	if got[0].Xt.Decoded {
+		t.Fatalf("check_set 0x08 decoded as %+v, want undecoded: that bit value was never captured", got[0].Xt)
+	}
+}
+
+// Only revision 1 is covered by the capture; a different revision must not
+// be decoded even though the bytes are otherwise identical.
+func TestConvertRecentUnknownRevisionStaysUndecoded(t *testing.T) {
+	info := mustDecodeXtUnknown(t, recentSetHex)
+	got := ConvertExprs([]expr.Any{&expr.Match{Name: "recent", Rev: 2, Info: info}})
+	if got[0].Xt.Decoded {
+		t.Fatalf("rev 2 decoded as %+v, want undecoded: only rev 1 is covered by the capture", got[0].Xt)
 	}
 }
 

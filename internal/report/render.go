@@ -168,9 +168,31 @@ func renderXt(x *facts.XtExpr) string {
 		return "ct state " + strings.Join(x.Conntrack.States, ",")
 	case x.Name == "addrtype" && x.AddrType != nil:
 		return "fib daddr type " + strings.Join(x.AddrType.DestTypes, ",")
+	case x.Name == "recent" && x.Recent != nil:
+		return renderRecent(x.Recent)
 	}
 	if x.Kind == "target" {
 		return strings.ToLower(x.Name)
 	}
 	return "match " + x.Name + " (undecoded)"
+}
+
+// renderRecent reconstructs the iptables option spelling, e.g.
+// "recent --update --seconds 30 --hitcount 6 --name SSH".
+func renderRecent(r *facts.RecentInfo) string {
+	parts := []string{"recent"}
+	if r.Invert {
+		parts = append(parts, "!")
+	}
+	parts = append(parts, "--"+r.Mode)
+	if r.Seconds > 0 {
+		parts = append(parts, "--seconds", fmt.Sprintf("%d", r.Seconds))
+	}
+	if r.HitCount > 0 {
+		parts = append(parts, "--hitcount", fmt.Sprintf("%d", r.HitCount))
+	}
+	if r.Name != "" {
+		parts = append(parts, "--name", r.Name)
+	}
+	return strings.Join(parts, " ")
 }
