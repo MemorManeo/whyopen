@@ -15,7 +15,7 @@ unknown    22/tcp     IPv4    ssh.service                 0.0.0.0     rule 10496
 unknown    22/tcp     IPv6    ssh.service                 ::          rule 65113 in filter/ufw6-user-input uses an expression whyopen cannot resolve
 filtered   4319/tcp   IPv4    node                        ::          fell through to the drop policy of filter/INPUT
 filtered   5432/tcp   IPv4    postgresql@16-main.service  127.0.0.1   bound to 127.0.0.1, which does not match any host address the internet can reach
-filtered   8888/tcp   IPv4    searxng                     127.0.0.1   bound to 127.0.0.1, which does not match any host address the internet can reach
+filtered   8888/tcp   IPv4    search-1                    127.0.0.1   bound to 127.0.0.1, which does not match any host address the internet can reach
 ```
 
 That is a real run against an Ubuntu 24.04 host with UFW and Docker, 275
