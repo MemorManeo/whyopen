@@ -70,7 +70,7 @@ All three payloads are 232 bytes, revision 1. Reading byte-for-byte:
 | 0-3 | `seconds` (`__u32`, LE) | 4 | `1e000000`=30 for `--seconds 30`, `3c000000`=60 for `--seconds 60`, `0` for `--set`, which takes no `--seconds` |
 | 4-7 | `hit_count` (`__u32`, LE) | 4 | `06000000`=6 only on the `--hitcount 6` rule, `0` on the other two |
 | 8 | `check_set` (`__u8`) | 1 | `0x02` for `--set`, `0x04` for `--update`, `0x01` for `--rcheck`; a clean bit-per-mode pattern (`1<<0`, `1<<1`, `1<<2`), consistent with the well-known `CHECK`/`SET`/`UPDATE` flags. `--remove` (`1<<3` by the same pattern) was not captured, so that bit value is not confirmed by this evidence, only inferred from the pattern the other three follow |
-| 9 | `invert` | 1 | `0x00` in all three; no rule used `!`, so the "set" value for this flag was not captured, only its zero value |
+| 9 | `invert` (label inferred) | 1 | `0x00` in all three; no rule used `!`, so neither the flag's "set" value nor the field's identity is evidenced here; see note below |
 | 10-209 | `name[200]` | 200 | see the `DEFAULT` overwrite below |
 | 210 | `side` (source vs. dest) | 1 | inferred, see note below |
 | 211 | padding | 1 | inferred, see note below |
@@ -109,6 +109,18 @@ the byte count or the mask's position, and nothing here depends on choosing
 between them, since neither the test data nor the evaluator rule below
 reads that byte.
 
+**Offset 9's identity is recalled from a header, not observed.** All three
+payloads carry `0x00` at offset 9, so the capture establishes only that the
+byte is zero for rules written without `!`. The label `invert`, and with it
+the claim that a non-zero value there negates the match, comes from the
+`xt_recent` uapi header, which is the one source this record's own premise
+says not to trust; nothing in these bytes distinguishes that field from
+padding. The decoder reads offset 9 as a boolean and the evaluator flips
+the rule's outcome when it is set, so the semantic rule below rests on that
+recalled identity rather than on this evidence. Before a verdict is allowed
+to turn on it, capture a `! --update` variant and confirm the byte, exactly
+as the `side` note above asks for `--rdest`.
+
 ## Decision
 
 Decode `xt recent` matches at revision 1, length 232, using the offsets
@@ -118,25 +130,42 @@ Any other revision or length is not covered by this capture and must decode
 to `unknown` rather than guess.
 
 **Semantic rule.** whyopen's synthetic packet always represents a first
-connection from a source the recent list has never seen. That collapses
-the four modes to one test:
+connection from a source the recent list has never seen. That makes each
+mode decidable without knowing any list state:
 
-- `check_set` with the `SET` bit (`0x02`) present: the rule records the
-  source and always matches, on this or any packet.
-- `check_set` without the `SET` bit, i.e. `CHECK` (`0x01`), `UPDATE`
-  (`0x04`) or `REMOVE`: none of these can match an empty list, so they
-  never match a never-seen source. This is why `REMOVE`'s exact bit value
-  does not need to be captured to decode correctly: the evaluator only
-  needs to know whether `SET` is present, not which of the other three
-  modes it is.
-- `invert` (offset 9) flips whichever of the above the rule would
-  otherwise produce.
+- `--set` (`check_set` `0x02`): the rule records the source and matches, on
+  this or any packet.
+- `--rcheck` (`0x01`) and `--update` (`0x04`): neither can match an empty
+  list, so neither matches a never-seen source.
+- `--remove`: has nothing to remove, so it does not match either. Its
+  `check_set` byte was never captured, so in practice a `--remove` rule
+  never reaches this test; it stops at the decoder, below.
+- `invert` (offset 9), when set, flips whichever of the above the rule
+  would otherwise produce. This step rests on the recalled field identity
+  noted above, not on the captured bytes.
 
-Any `check_set` value other than the three captured bit patterns (and
-`invert` other than 0, which was never exercised) still decodes
-structurally but its outcome under this rule should be treated the same as
-the mode it structurally matches (`SET` present or not), since the rule
-depends only on that one bit.
+**Only the three captured bit patterns decode; everything else stays
+undecoded.** A `check_set` byte that is not exactly `0x02`, `0x04` or
+`0x01` leaves the match undecoded, and an undecoded match makes the port it
+guards report `unknown`. The alternative reading, treating `check_set` as a
+bitmask and resolving any uncaptured value by whether bit `0x02` happens to
+be set in it, was considered and rejected. It would decide the outcome of
+byte patterns this capture never observed, on the strength of a flag layout
+recalled from a header rather than read off the wire, which is what
+decision 0001 and whyopen's never-guess constraint forbid. Reporting
+`unknown` for a rule shape whyopen has not seen is the correct answer here,
+not a limitation to engineer around.
+
+Two places enforce this, and a future implementer should keep both:
+`recentModeName` in `internal/collect/nftconv.go` exact-matches the three
+bytes and returns undecoded otherwise, and the `recent` case in
+`internal/model/match.go` enumerates the five mode names and returns the
+unresolved triple for anything else, so a facts document written by a later
+version cannot resolve a mode this build does not model.
+
+The `invert` byte is the one place the decoder does generalise: it reads
+any non-zero value at offset 9 as inverted, though only `0x00` was ever
+captured.
 
 ## Consequences
 
@@ -145,9 +174,11 @@ depends only on that one bit.
 - The `side` byte's offset is inferred rather than directly evidenced; if a
   future task needs to read `side` (for example to support `--rdest`), it
   should capture that variant rather than trust the inference here.
-- `REMOVE`'s `check_set` bit value was never captured. The evaluator does
-  not need it (see the semantic rule above), but anything that does would
-  need a fresh capture.
+- `REMOVE`'s `check_set` bit value was never captured, so whyopen does not
+  decode a `--remove` rule at all and reports `unknown` for the port such a
+  rule guards. Inferring the bit from the pattern the other three follow
+  was rejected (see the semantic rule above). Supporting `--remove` needs a
+  fresh capture, not an inference.
 - This is one kernel, one iptables version, one revision. A different
   kernel or a `--mask` argument narrower than all-ones is out of scope for
   this record.
