@@ -71,7 +71,12 @@ func TestUFWShapedRulesetAcceptsOnlyTheAllowedPort(t *testing.T) {
 // Docker already installed can hand out namespaces that start at 1. This
 // suite never relies on that default in either direction; every caller sets
 // the value it needs.
-func dockerShapedNetns(t *testing.T, forwarding bool) (ns string, bridge string) {
+//
+// It returns the root namespace's ip_forward value as read before that write,
+// so a caller asserting isolation compares against what this host actually
+// had rather than against a literal: a host without Docker, or a hardened
+// one, legitimately sits at 0.
+func dockerShapedNetns(t *testing.T, forwarding bool) (ns string, bridge string, rootForwarding string) {
 	t.Helper()
 	ns = newNetns(t)
 	bridge = "br-000000000001"
@@ -82,16 +87,33 @@ func dockerShapedNetns(t *testing.T, forwarding bool) (ns string, bridge string)
 
 	// Whether this write actually lands on the namespace or, in some
 	// environment, leaks to the root namespace, this suite must never
-	// leave the CI runner's global network configuration different from
-	// how it found it. Capture the root namespace's value directly (no ip
-	// netns exec, so this reads the root namespace regardless of where the
-	// write below lands) and restore it on cleanup either way.
+	// leave the host's global network configuration different from how it
+	// found it. Capture the root namespace's value directly (no ip netns
+	// exec, so this reads the root namespace regardless of where the write
+	// below lands).
 	before, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
 	if err != nil {
 		t.Fatalf("read root /proc/sys/net/ipv4/ip_forward before setting namespace forwarding: %v", err)
 	}
 	t.Cleanup(func() {
-		os.WriteFile("/proc/sys/net/ipv4/ip_forward", before, 0o644)
+		// Restore only if the value actually moved. Isolation is proven by
+		// TestPublishIsFilteredWhenForwardingIsDisabled, so an unconditional
+		// write back can no longer repair anything, only introduce drift of
+		// its own, and its error must not be swallowed when it does run.
+		now, readErr := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
+		if readErr != nil {
+			t.Errorf("read root /proc/sys/net/ipv4/ip_forward during cleanup: %v", readErr)
+			return
+		}
+		if string(now) == string(before) {
+			return
+		}
+		t.Logf("root net.ipv4.ip_forward moved from %q to %q during this test; restoring it",
+			strings.TrimSpace(string(before)), strings.TrimSpace(string(now)))
+		if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", before, 0o644); err != nil {
+			t.Errorf("restore root /proc/sys/net/ipv4/ip_forward to %q: %v",
+				strings.TrimSpace(string(before)), err)
+		}
 	})
 	want := "0"
 	if forwarding {
@@ -109,7 +131,7 @@ func dockerShapedNetns(t *testing.T, forwarding bool) (ns string, bridge string)
 		"--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT")
 	nsRun(t, ns, "iptables", "-A", "FORWARD", "-j", "DOCKER")
 	nsRun(t, ns, "iptables", "-A", "DOCKER-USER", "-j", "RETURN")
-	return ns, bridge
+	return ns, bridge, strings.TrimSpace(string(before))
 }
 
 // publishOnAllInterfaces adds the nat and filter rules Docker writes for
@@ -137,7 +159,7 @@ func TestPublishOnAllInterfacesIsReachableDespiteInputDeny(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "iptables", "python3", "sysctl")
 
-	ns, bridge := dockerShapedNetns(t, true)
+	ns, bridge, _ := dockerShapedNetns(t, true)
 	listenIn(t, ns, "0.0.0.0", "5432")
 	nsRun(t, ns, "iptables", "-P", "INPUT", "DROP")
 	nsRun(t, ns, "iptables", "-P", "FORWARD", "DROP")
@@ -173,7 +195,7 @@ func TestDockerUserDenyOverridesThePublish(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "iptables", "python3", "sysctl")
 
-	ns, bridge := dockerShapedNetns(t, true)
+	ns, bridge, _ := dockerShapedNetns(t, true)
 	listenIn(t, ns, "0.0.0.0", "5432")
 	nsRun(t, ns, "iptables", "-P", "INPUT", "DROP")
 	nsRun(t, ns, "iptables", "-P", "FORWARD", "DROP")
@@ -209,7 +231,7 @@ func TestPublishOnLoopbackIsFiltered(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "iptables", "python3", "sysctl")
 
-	ns, bridge := dockerShapedNetns(t, true)
+	ns, bridge, _ := dockerShapedNetns(t, true)
 	listenIn(t, ns, "127.0.0.1", "5432")
 	nsRun(t, ns, "iptables", "-P", "INPUT", "DROP")
 	nsRun(t, ns, "iptables", "-P", "FORWARD", "DROP")
@@ -249,13 +271,13 @@ func TestPublishIsFilteredWhenForwardingIsDisabled(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "iptables", "python3", "sysctl")
 
-	ns, bridge := dockerShapedNetns(t, false)
+	ns, bridge, rootForwarding := dockerShapedNetns(t, false)
 
 	// dockerShapedNetns(t, false) already set net.ipv4.ip_forward=0 inside
 	// the namespace. Confirm isolation held rather than assuming it: if the
 	// namespace does not read back 0, or if the root namespace no longer
-	// reads 1, the sysctl is not isolated the way every verdict below
-	// depends on it being.
+	// reads what it read before that write, the sysctl is not isolated the
+	// way every verdict below depends on it being.
 	nsCat := nsRun(t, ns, "cat", "/proc/sys/net/ipv4/ip_forward")
 	t.Logf("namespace /proc/sys/net/ipv4/ip_forward (cat via ip netns exec) = %q", strings.TrimSpace(nsCat))
 	if got := strings.TrimSpace(nsCat); got != "0" {
@@ -271,8 +293,8 @@ func TestPublishIsFilteredWhenForwardingIsDisabled(t *testing.T) {
 		t.Fatalf("read root /proc/sys/net/ipv4/ip_forward: %v", err)
 	}
 	t.Logf("root namespace /proc/sys/net/ipv4/ip_forward (os.ReadFile, no ip netns exec) = %q", strings.TrimSpace(string(rootVal)))
-	if got := strings.TrimSpace(string(rootVal)); got != "1" {
-		t.Fatalf("root namespace net.ipv4.ip_forward = %q, want 1: setting the test namespace's forwarding to 0 mutated the CI runner's global network state instead of staying isolated to the namespace", got)
+	if got := strings.TrimSpace(string(rootVal)); got != rootForwarding {
+		t.Fatalf("root namespace net.ipv4.ip_forward = %q, want %q, the value it held before the namespace write: setting the test namespace's forwarding to 0 mutated the host's global network state instead of staying isolated to the namespace", got, rootForwarding)
 	}
 
 	listenIn(t, ns, "0.0.0.0", "5432")
