@@ -10,10 +10,10 @@ import (
 )
 
 const containersJSON = `[
- {"Id":"abc123def456","Names":["/urizen-web-1"],
+ {"Id":"abc123def456","Names":["/web-1"],
   "Ports":[{"IP":"127.0.0.1","PrivatePort":3000,"PublicPort":3000,"Type":"tcp"},
            {"PrivatePort":9229,"Type":"tcp"}],
-  "NetworkSettings":{"Networks":{"urizen_default":{"IPAddress":"172.27.0.5"}}}}
+  "NetworkSettings":{"Networks":{"app_default":{"IPAddress":"172.27.0.5"}}}}
 ]`
 
 func TestDockerFromSocket(t *testing.T) {
@@ -42,7 +42,7 @@ func TestDockerFromSocket(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 	c := got.Containers[0]
-	if c.Name != "urizen-web-1" || c.ID != "abc123def456" {
+	if c.Name != "web-1" || c.ID != "abc123def456" {
 		t.Fatalf("container = %+v", c)
 	}
 	// Only the published port counts; the unpublished 9229 must be dropped.

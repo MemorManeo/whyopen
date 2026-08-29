@@ -9,10 +9,10 @@ func TestFactsRoundTrip(t *testing.T) {
 	in := Facts{
 		SchemaVersion: SchemaVersion,
 		Host: Host{
-			Hostname: "gulfinson",
+			Hostname: "testhost",
 			Interfaces: []Interface{{
 				Name: "eth0", Index: 2, Up: true,
-				Addresses: []Addr{{IP: "159.195.9.107", Prefix: 22, Family: "ip", Scope: "global"}},
+				Addresses: []Addr{{IP: "203.0.113.10", Prefix: 22, Family: "ip", Scope: "global"}},
 			}},
 			Sysctls: Sysctls{IPv4Forward: true, BindV6Only: false},
 		},
@@ -30,7 +30,7 @@ func TestFactsRoundTrip(t *testing.T) {
 			}},
 		}}},
 		Docker: Docker{Containers: []Container{{
-			ID: "abc123", Name: "urizen-web-1",
+			ID: "abc123", Name: "web-1",
 			Publishes: []Publish{{HostIP: "127.0.0.1", HostPort: 3000, ContainerIP: "172.27.0.5", ContainerPort: 3000, Proto: "tcp"}},
 		}}},
 		Warnings: []Warning{{Source: "docker", Message: "socket not readable"}},

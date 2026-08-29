@@ -80,10 +80,10 @@ func TestFactsRoundTrip(t *testing.T) {
 	in := Facts{
 		SchemaVersion: SchemaVersion,
 		Host: Host{
-			Hostname: "gulfinson",
+			Hostname: "testhost",
 			Interfaces: []Interface{{
 				Name: "eth0", Index: 2, Up: true,
-				Addresses: []Addr{{IP: "159.195.9.107", Prefix: 22, Family: "ip", Scope: "global"}},
+				Addresses: []Addr{{IP: "203.0.113.10", Prefix: 22, Family: "ip", Scope: "global"}},
 			}},
 			Sysctls: Sysctls{IPv4Forward: true, BindV6Only: false},
 		},
@@ -101,7 +101,7 @@ func TestFactsRoundTrip(t *testing.T) {
 			}},
 		}}},
 		Docker: Docker{Containers: []Container{{
-			ID: "abc123", Name: "urizen-web-1",
+			ID: "abc123", Name: "web-1",
 			Publishes: []Publish{{HostIP: "127.0.0.1", HostPort: 3000, ContainerIP: "172.27.0.5", ContainerPort: 3000, Proto: "tcp"}},
 		}}},
 		Warnings: []Warning{{Source: "docker", Message: "socket not readable"}},
@@ -1101,13 +1101,13 @@ import (
 
 func TestClassifyAddr(t *testing.T) {
 	cases := map[string]string{
-		"159.195.9.107":     "global",
+		"203.0.113.10":     "global",
 		"172.17.0.1":        "private",
 		"10.0.0.5":          "private",
 		"192.168.1.1":       "private",
 		"127.0.0.1":         "loopback",
 		"::1":               "loopback",
-		"2a0a:4cc0:ff:492::": "global",
+		"2001:db8::10": "global",
 		"fe80::1":           "link-local",
 		"fd00::1":           "ula",
 	}
@@ -1498,10 +1498,10 @@ import (
 )
 
 const containersJSON = `[
- {"Id":"abc123def456","Names":["/urizen-web-1"],
+ {"Id":"abc123def456","Names":["/web-1"],
   "Ports":[{"IP":"127.0.0.1","PrivatePort":3000,"PublicPort":3000,"Type":"tcp"},
            {"PrivatePort":9229,"Type":"tcp"}],
-  "NetworkSettings":{"Networks":{"urizen_default":{"IPAddress":"172.27.0.5"}}}}
+  "NetworkSettings":{"Networks":{"app_default":{"IPAddress":"172.27.0.5"}}}}
 ]`
 
 func TestDockerFromSocket(t *testing.T) {
@@ -1530,7 +1530,7 @@ func TestDockerFromSocket(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 	c := got.Containers[0]
-	if c.Name != "urizen-web-1" || c.ID != "abc123def456" {
+	if c.Name != "web-1" || c.ID != "abc123def456" {
 		t.Fatalf("container = %+v", c)
 	}
 	// Only the published port counts; the unpublished 9229 must be dropped.
@@ -2881,7 +2881,7 @@ func TestPublishOnAllInterfacesIsReachableDespiteUFW(t *testing.T) {
 	filter.Chains[2].Rules = []facts.Rule{acceptRule(12)} // DOCKER accepts
 	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter, dockerNAT("0.0.0.0", 5432)}}
 	f.Docker = facts.Docker{Available: true, Containers: []facts.Container{{
-		ID: "c1", Name: "resourcehub-db",
+		ID: "c1", Name: "db-1",
 		Publishes: []facts.Publish{{HostIP: "0.0.0.0", HostPort: 5432,
 			ContainerIP: "172.20.0.2", ContainerPort: 5432, Proto: "tcp"}},
 	}}}
@@ -2897,7 +2897,7 @@ func TestPublishOnAllInterfacesIsReachableDespiteUFW(t *testing.T) {
 	if v.DNAT == nil || v.DNAT.Port != 5432 {
 		t.Fatalf("expected the verdict to carry the DNAT rewrite, got %+v", v.DNAT)
 	}
-	if v.Endpoint.Owner != "resourcehub-db" {
+	if v.Endpoint.Owner != "db-1" {
 		t.Fatalf("owner = %q, want the container name", v.Endpoint.Owner)
 	}
 	var sawForward bool
@@ -2922,7 +2922,7 @@ func TestPublishOnLoopbackIsNotReachable(t *testing.T) {
 	filter.Chains[2].Rules = []facts.Rule{acceptRule(12)}
 	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter, dockerNAT("127.0.0.1", 5432)}}
 	f.Docker = facts.Docker{Available: true, Containers: []facts.Container{{
-		ID: "c1", Name: "resourcehub-db",
+		ID: "c1", Name: "db-1",
 		Publishes: []facts.Publish{{HostIP: "127.0.0.1", HostPort: 5432,
 			ContainerIP: "172.20.0.2", ContainerPort: 5432, Proto: "tcp"}},
 	}}}

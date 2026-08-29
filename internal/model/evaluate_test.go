@@ -84,7 +84,7 @@ func TestPublishOnAllInterfacesIsReachableDespiteUFW(t *testing.T) {
 	filter.Chains[2].Rules = []facts.Rule{acceptRule(12)} // DOCKER accepts
 	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter, dockerNAT("0.0.0.0", 5432)}}
 	f.Docker = facts.Docker{Available: true, Containers: []facts.Container{{
-		ID: "c1", Name: "resourcehub-db",
+		ID: "c1", Name: "db-1",
 		Publishes: []facts.Publish{{HostIP: "0.0.0.0", HostPort: 5432,
 			ContainerIP: "172.20.0.2", ContainerPort: 5432, Proto: "tcp"}},
 	}}}
@@ -100,7 +100,7 @@ func TestPublishOnAllInterfacesIsReachableDespiteUFW(t *testing.T) {
 	if v.DNAT == nil || v.DNAT.Port != 5432 {
 		t.Fatalf("expected the verdict to carry the DNAT rewrite, got %+v", v.DNAT)
 	}
-	if v.Endpoint.Owner != "resourcehub-db" {
+	if v.Endpoint.Owner != "db-1" {
 		t.Fatalf("owner = %q, want the container name", v.Endpoint.Owner)
 	}
 	var sawForward bool
@@ -125,7 +125,7 @@ func TestPublishOnLoopbackIsNotReachable(t *testing.T) {
 	filter.Chains[2].Rules = []facts.Rule{acceptRule(12)}
 	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter, dockerNAT("127.0.0.1", 5432)}}
 	f.Docker = facts.Docker{Available: true, Containers: []facts.Container{{
-		ID: "c1", Name: "resourcehub-db",
+		ID: "c1", Name: "db-1",
 		Publishes: []facts.Publish{{HostIP: "127.0.0.1", HostPort: 5432,
 			ContainerIP: "172.20.0.2", ContainerPort: 5432, Proto: "tcp"}},
 	}}}
@@ -439,7 +439,7 @@ func TestDNATWithForwardingDisabledIsFiltered(t *testing.T) {
 	filter.Chains[2].Rules = []facts.Rule{acceptRule(12)} // DOCKER accepts
 	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter, dockerNAT("0.0.0.0", 5432)}}
 	f.Docker = facts.Docker{Available: true, Containers: []facts.Container{{
-		ID: "c1", Name: "resourcehub-db",
+		ID: "c1", Name: "db-1",
 		Publishes: []facts.Publish{{HostIP: "0.0.0.0", HostPort: 5432,
 			ContainerIP: "172.20.0.2", ContainerPort: 5432, Proto: "tcp"}},
 	}}}
@@ -464,7 +464,7 @@ func TestDNATWithForwardingEnabledStillReachable(t *testing.T) {
 	filter.Chains[2].Rules = []facts.Rule{acceptRule(12)}
 	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter, dockerNAT("0.0.0.0", 5432)}}
 	f.Docker = facts.Docker{Available: true, Containers: []facts.Container{{
-		ID: "c1", Name: "resourcehub-db",
+		ID: "c1", Name: "db-1",
 		Publishes: []facts.Publish{{HostIP: "0.0.0.0", HostPort: 5432,
 			ContainerIP: "172.20.0.2", ContainerPort: 5432, Proto: "tcp"}},
 	}}}
