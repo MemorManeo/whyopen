@@ -99,11 +99,15 @@ before the 16-byte mask begins at the next 4-byte-aligned offset (212), is
 inferred by combining the observed total length (232), the known
 `XT_RECENT_NAME_LEN` of 200, and standard struct alignment for a
 4-byte-aligned `union nf_inet_addr`: `10 (header) + 200 (name) + 1 (side) +
-1 (pad) + 16 (mask) + 4 (trailing pad) = 232`. An alternative reading with a
-201-byte name and no pre-mask padding byte produces the same total and is
-not ruled out by this capture; nothing here depends on choosing between
-them, since neither test data nor the evaluator rule below reads the `side`
-byte.
+1 (pad) + 16 (mask) + 4 (trailing pad) = 232`. An alternative reading treats
+the byte at offset 210 as the 201st byte of `name` rather than a separate
+`side` field; that reading still needs the same single padding byte at
+offset 211 to reach the mask's 4-byte-aligned start, so it totals the same
+232 bytes and puts the mask at the same observed offset, 212. What differs
+between the two readings is only the label on the byte at offset 210, not
+the byte count or the mask's position, and nothing here depends on choosing
+between them, since neither the test data nor the evaluator rule below
+reads that byte.
 
 ## Decision
 

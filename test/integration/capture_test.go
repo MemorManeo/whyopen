@@ -40,8 +40,12 @@ func TestCaptureRecentPayload(t *testing.T) {
 	for i, p := range payloads {
 		t.Logf("recent[%d] rev=%d len=%d hex=%s", i, p.rev, len(p.info), hex.EncodeToString(p.info))
 	}
-	if hex.EncodeToString(payloads[0].info) == hex.EncodeToString(payloads[1].info) {
-		t.Fatal("--set and --update produced identical payloads, so the mode cannot be decoded")
+	for i := 0; i < len(payloads); i++ {
+		for j := i + 1; j < len(payloads); j++ {
+			if hex.EncodeToString(payloads[i].info) == hex.EncodeToString(payloads[j].info) {
+				t.Fatalf("payloads[%d] and payloads[%d] are byte-identical, so those two modes cannot be told apart", i, j)
+			}
+		}
 	}
 }
 
