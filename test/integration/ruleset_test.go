@@ -63,11 +63,14 @@ func TestUFWShapedRulesetAcceptsOnlyTheAllowedPort(t *testing.T) {
 // traffic, and a DOCKER chain in filter reached from FORWARD. The bridge name
 // is 15 bytes, the kernel maximum, matching the shape of a real br-<hash>.
 //
-// forwarding controls net.ipv4.ip_forward inside the namespace. Docker
-// enables forwarding on every real host it runs on, so tests exercising a
-// genuine publish pass true; a namespace left at the kernel default of 0
-// models a machine Docker has never touched, which only the negative
-// forwarding-disabled test wants.
+// forwarding sets net.ipv4.ip_forward explicitly inside the namespace, to 1
+// when true and to 0 when false. A namespace's default for this sysctl is
+// not dependable: depending on net.core.devconf_inherit_init_net and the
+// kernel, a fresh namespace can inherit whatever the root namespace already
+// has rather than starting at the compiled-in default, so a CI runner with
+// Docker already installed can hand out namespaces that start at 1. This
+// suite never relies on that default in either direction; every caller sets
+// the value it needs.
 func dockerShapedNetns(t *testing.T, forwarding bool) (ns string, bridge string) {
 	t.Helper()
 	ns = newNetns(t)
@@ -77,31 +80,24 @@ func dockerShapedNetns(t *testing.T, forwarding bool) (ns string, bridge string)
 	nsRun(t, ns, "ip", "addr", "add", "172.20.0.1/16", "dev", bridge)
 	nsRun(t, ns, "ip", "link", "set", bridge, "up")
 
-	if forwarding {
-		// A fresh network namespace starts with net.ipv4.ip_forward at the
-		// kernel default of 0, not at whatever the host's root namespace
-		// has. Without this, a DNAT'd packet to a non-local address never
-		// reaches the forward hook and every publish test would report
-		// filtered for the forwarding-disabled reason instead of the thing
-		// each test actually means to exercise. Do not remove this as dead
-		// weight: it is load-bearing, not noise.
-		//
-		// Whether this write actually lands on the namespace or, under a
-		// procfs subtlety still being diagnosed, leaks to the root
-		// namespace, this suite must never leave the CI runner's global
-		// network configuration different from how it found it. Capture
-		// the root namespace's value directly (no ip netns exec, so this
-		// reads the root namespace regardless of where the write below
-		// lands) and restore it on cleanup either way.
-		before, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
-		if err != nil {
-			t.Fatalf("read root /proc/sys/net/ipv4/ip_forward before enabling namespace forwarding: %v", err)
-		}
-		t.Cleanup(func() {
-			os.WriteFile("/proc/sys/net/ipv4/ip_forward", before, 0o644)
-		})
-		nsRun(t, ns, "sysctl", "-w", "net.ipv4.ip_forward=1")
+	// Whether this write actually lands on the namespace or, in some
+	// environment, leaks to the root namespace, this suite must never
+	// leave the CI runner's global network configuration different from
+	// how it found it. Capture the root namespace's value directly (no ip
+	// netns exec, so this reads the root namespace regardless of where the
+	// write below lands) and restore it on cleanup either way.
+	before, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
+	if err != nil {
+		t.Fatalf("read root /proc/sys/net/ipv4/ip_forward before setting namespace forwarding: %v", err)
 	}
+	t.Cleanup(func() {
+		os.WriteFile("/proc/sys/net/ipv4/ip_forward", before, 0o644)
+	})
+	want := "0"
+	if forwarding {
+		want = "1"
+	}
+	nsRun(t, ns, "sysctl", "-w", "net.ipv4.ip_forward="+want)
 
 	nsRun(t, ns, "iptables", "-t", "nat", "-N", "DOCKER")
 	nsRun(t, ns, "iptables", "-t", "nat", "-A", "PREROUTING",
@@ -223,16 +219,47 @@ func TestPublishOnLoopbackIsFiltered(t *testing.T) {
 
 // The forwarding check has, until now, only ever run against a facts
 // document assembled by hand in Go. This proves it against a real kernel: a
-// namespace left at the default of net.ipv4.ip_forward=0 models a host
-// Docker has never touched. The packet is still DNAT'd in prerouting, since
-// that decision does not consult the sysctl, but the rewritten destination
-// is off-host and the kernel never routes it on, so it must be reported
+// namespace with forwarding explicitly disabled models a host Docker has
+// never touched. The packet is still DNAT'd in prerouting, since that
+// decision does not consult the sysctl, but the rewritten destination is
+// off-host and the kernel never routes it on, so it must be reported
 // filtered for that reason rather than reachable.
+//
+// A namespace's default for this sysctl is not dependable (see
+// dockerShapedNetns), so this test does not trust the default: it asserts
+// isolation actually held, both that the namespace really reads back 0 and
+// that setting it there did not also change the root namespace's value,
+// before trusting any verdict built on top of it.
 func TestPublishIsFilteredWhenForwardingIsDisabled(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "iptables", "python3", "sysctl")
 
 	ns, bridge := dockerShapedNetns(t, false)
+
+	// dockerShapedNetns(t, false) already set net.ipv4.ip_forward=0 inside
+	// the namespace. Confirm isolation held rather than assuming it: if the
+	// namespace does not read back 0, or if the root namespace no longer
+	// reads 1, the sysctl is not isolated the way every verdict below
+	// depends on it being.
+	nsCat := nsRun(t, ns, "cat", "/proc/sys/net/ipv4/ip_forward")
+	t.Logf("namespace /proc/sys/net/ipv4/ip_forward (cat via ip netns exec) = %q", strings.TrimSpace(nsCat))
+	if got := strings.TrimSpace(nsCat); got != "0" {
+		t.Fatalf("namespace net.ipv4.ip_forward = %q after setting it to 0, want 0", got)
+	}
+	nsSysctl := nsRun(t, ns, "sysctl", "-n", "net.ipv4.ip_forward")
+	t.Logf("namespace net.ipv4.ip_forward (sysctl -n via ip netns exec) = %q", strings.TrimSpace(nsSysctl))
+	if got := strings.TrimSpace(nsSysctl); got != "0" {
+		t.Fatalf("namespace sysctl -n net.ipv4.ip_forward = %q after setting it to 0, want 0", got)
+	}
+	rootVal, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
+	if err != nil {
+		t.Fatalf("read root /proc/sys/net/ipv4/ip_forward: %v", err)
+	}
+	t.Logf("root namespace /proc/sys/net/ipv4/ip_forward (os.ReadFile, no ip netns exec) = %q", strings.TrimSpace(string(rootVal)))
+	if got := strings.TrimSpace(string(rootVal)); got != "1" {
+		t.Fatalf("root namespace net.ipv4.ip_forward = %q, want 1: setting the test namespace's forwarding to 0 mutated the CI runner's global network state instead of staying isolated to the namespace", got)
+	}
+
 	listenIn(t, ns, "0.0.0.0", "5432")
 	nsRun(t, ns, "iptables", "-P", "INPUT", "DROP")
 	nsRun(t, ns, "iptables", "-P", "FORWARD", "DROP")
@@ -249,15 +276,6 @@ func TestPublishIsFilteredWhenForwardingIsDisabled(t *testing.T) {
 			t.Logf("host warning: %s", w.Message)
 		}
 	}
-	nsCat := nsRun(t, ns, "cat", "/proc/sys/net/ipv4/ip_forward")
-	t.Logf("namespace /proc/sys/net/ipv4/ip_forward (cat via ip netns exec) = %q", strings.TrimSpace(nsCat))
-	nsSysctl := nsRun(t, ns, "sysctl", "-n", "net.ipv4.ip_forward")
-	t.Logf("namespace net.ipv4.ip_forward (sysctl -n via ip netns exec) = %q", strings.TrimSpace(nsSysctl))
-	rootVal, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
-	if err != nil {
-		t.Fatalf("read root /proc/sys/net/ipv4/ip_forward: %v", err)
-	}
-	t.Logf("root namespace /proc/sys/net/ipv4/ip_forward (os.ReadFile, no ip netns exec) = %q", strings.TrimSpace(string(rootVal)))
 
 	v := verdictFor(evaluate(f), 5432, "ip")
 	if v == nil {
