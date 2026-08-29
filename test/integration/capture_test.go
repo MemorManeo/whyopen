@@ -4,8 +4,14 @@ package integration
 
 import (
 	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"testing"
 
+	"github.com/MemorManeo/whyopen/internal/collect"
+	"github.com/MemorManeo/whyopen/internal/facts"
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
 	"github.com/google/nftables/xt"
@@ -98,4 +104,192 @@ func captureXtPayloads(t *testing.T, ns string, name string) []xtPayload {
 		}
 	})
 	return out
+}
+
+// TestCaptureFirewalldExpressions is a capture, not an assertion of
+// behaviour. UFW and Docker reach the kernel through iptables-nft, so
+// whyopen already decodes the xt compatibility expressions they produce.
+// firewalld, and any hand-written nft ruleset, goes straight to native
+// nftables expressions instead, and whyopen has almost no decoder for
+// those. This test does not install firewalld: what matters is the
+// ruleset shape it emits, not the daemon, so the shape is written directly
+// with nft -f inside a namespace, using the constructs firewalld actually
+// generates: an inet family table, a base chain with a hook and priority,
+// named and anonymous sets, both the comma-list and brace-list forms of a
+// ct state match, a meta l4proto match, jumps and a goto into zone chains,
+// and an iifname match both directly and through a named set.
+//
+// It records the Go type of every expression google/nftables returns for
+// every rule, split into what whyopen's own converter already decodes and
+// what it reports as unknown, and logs nft's own "list ruleset" text
+// alongside it. The two are meant to be compared by eye: google/nftables
+// silently drops any kernel expression whose name is not in its own
+// exprFromName table (it returns nil and the caller skips it), so a
+// statement visible in the nft text with no matching Go type in the log
+// below is that gap, not a bug in this test.
+//
+// It asserts that the capture found at least one expression whyopen
+// currently reports as unknown, so the test fails once these shapes become
+// fully decodable and the record goes stale, and, more strongly, that the
+// unknown expressions span at least two distinct Go types: native ct state
+// (expr.Ct has no case in ConvertExprs at all) and at least one named or
+// anonymous set membership test (expr.Lookup, likewise undecoded), which
+// this ruleset's interface set, port set and "meta l4proto { tcp, udp }"
+// match all produce independently of one another.
+func TestCaptureFirewalldExpressions(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft")
+
+	ns := newNetns(t)
+
+	// Leaf chains are declared before the chains that jump into them so
+	// this file does not depend on nft resolving a forward reference
+	// within the same batch.
+	const firewalldRuleset = `
+table inet whyopen_fw {
+	set zone_public_ifaces {
+		type ifname
+		elements = { "wan0" }
+	}
+
+	set zone_public_ports {
+		type inet_service
+		elements = { 22, 8080 }
+	}
+
+	chain filter_IN_public_allow {
+		ct state { established, related } accept
+		tcp dport @zone_public_ports accept
+		meta l4proto { tcp, udp } counter accept
+	}
+
+	chain filter_IN_public_deny {
+		tcp dport 31337 counter drop
+	}
+
+	chain filter_IN_public {
+		jump filter_IN_public_allow
+		jump filter_IN_public_deny
+	}
+
+	chain filter_INPUT_ZONES {
+		iifname @zone_public_ifaces goto filter_IN_public
+		goto filter_IN_public
+	}
+
+	chain filter_INPUT {
+		type filter hook input priority filter + 10; policy accept;
+		ct state established,related accept
+		ct state invalid drop
+		iifname "lo" accept
+		jump filter_INPUT_ZONES
+		reject with icmpx type admin-prohibited
+	}
+}
+`
+	applyNftRuleset(t, ns, firewalldRuleset)
+
+	listing := nsRun(t, ns, "nft", "-a", "list", "ruleset")
+	t.Logf("nft -a list ruleset:\n%s", listing)
+
+	census := captureFirewalldExprs(t, ns)
+	if census.ruleCount == 0 {
+		t.Fatalf("no rules found over netlink; the ruleset did not apply")
+	}
+	logExprCounts(t, "decoded", census.known)
+	logExprCounts(t, "unknown", census.unknown)
+
+	if len(census.unknown) == 0 {
+		t.Fatalf("expected at least one expression whyopen currently reports as unknown, found none: either this shape no longer reaches the kernel as written, or whyopen has grown a decoder for everything this ruleset produces and this record is stale")
+	}
+	if len(census.unknown) < 2 {
+		t.Fatalf("expected the unknown expressions to span at least 2 distinct Go types, got %d: %v", len(census.unknown), census.unknown)
+	}
+}
+
+// applyNftRuleset writes ruleset to a file and loads it inside the
+// namespace with nft -f. nsRun's underlying exec.Command has no stdin
+// support, and a file also matches how firewalld itself applies a
+// ruleset: one atomic load, not a sequence of incremental edits.
+func applyNftRuleset(t *testing.T, ns string, ruleset string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ruleset.nft")
+	if err := os.WriteFile(path, []byte(ruleset), 0o644); err != nil {
+		t.Fatalf("write ruleset: %v", err)
+	}
+	nsRun(t, ns, "nft", "-f", path)
+}
+
+// exprCensus tallies, by Go type name, every expression google/nftables
+// returned for the applied ruleset, split by whether whyopen's own
+// converter (collect.ConvertExprs) decodes it or reports it unknown.
+type exprCensus struct {
+	ruleCount int
+	known     map[string]int
+	unknown   map[string]int
+}
+
+// captureFirewalldExprs reads every rule of every chain of every table in
+// the namespace over netlink, the same call sequence collectIn's binary
+// uses internally, but keeps the raw expr.Any values so it can report the
+// Go type of each one rather than only whyopen's decoded facts.Expr.
+func captureFirewalldExprs(t *testing.T, ns string) exprCensus {
+	t.Helper()
+	c := exprCensus{known: map[string]int{}, unknown: map[string]int{}}
+	inNetns(t, ns, func() {
+		conn, err := nftables.New()
+		if err != nil {
+			t.Fatalf("netlink: %v", err)
+		}
+		tables, err := conn.ListTables()
+		if err != nil {
+			t.Fatalf("list tables: %v", err)
+		}
+		for _, tbl := range tables {
+			chains, err := conn.ListChainsOfTableFamily(tbl.Family)
+			if err != nil {
+				continue
+			}
+			for _, ch := range chains {
+				if ch.Table.Name != tbl.Name || ch.Table.Family != tbl.Family {
+					continue
+				}
+				rules, err := conn.GetRules(tbl, ch)
+				if err != nil {
+					continue
+				}
+				for _, r := range rules {
+					c.ruleCount++
+					converted := collect.ConvertExprs(r.Exprs)
+					types := make([]string, 0, len(r.Exprs))
+					for i, e := range r.Exprs {
+						goType := fmt.Sprintf("%T", e)
+						types = append(types, goType)
+						if i < len(converted) && converted[i].Kind == facts.ExprUnknown {
+							c.unknown[goType]++
+						} else {
+							c.known[goType]++
+						}
+					}
+					t.Logf("table=%s chain=%s handle=%d exprs=%v", tbl.Name, ch.Name, r.Handle, types)
+				}
+			}
+		}
+	})
+	return c
+}
+
+// logExprCounts logs a sorted, deterministic view of a census map. Sorted
+// because Go randomises map iteration and this output is meant to be
+// copied into a decision record by hand.
+func logExprCounts(t *testing.T, label string, counts map[string]int) {
+	t.Helper()
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		t.Logf("%s: %s x%d", label, k, counts[k])
+	}
 }
