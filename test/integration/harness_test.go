@@ -121,7 +121,6 @@ func nsRun(t *testing.T, ns string, name string, args ...string) string {
 func inNetns(t *testing.T, ns string, fn func()) {
 	t.Helper()
 	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
 
 	original, err := os.Open("/proc/self/ns/net")
 	if err != nil {
@@ -138,10 +137,18 @@ func inNetns(t *testing.T, ns string, fn func()) {
 	if err := unix.Setns(int(target.Fd()), unix.CLONE_NEWNET); err != nil {
 		t.Fatalf("setns into %s: %v", ns, err)
 	}
+	// Do not defer UnlockOSThread unconditionally. If the restore below fails,
+	// this thread is still attached to the test namespace and must never go
+	// back into the runtime's pool, where an unrelated goroutine could be
+	// scheduled onto it and run inside a namespace that is about to be deleted.
+	// Go terminates a thread whose goroutine exits while locked, so leaving it
+	// locked retires it, which is exactly what we want.
 	defer func() {
 		if err := unix.Setns(int(original.Fd()), unix.CLONE_NEWNET); err != nil {
-			t.Fatalf("setns back: %v", err)
+			t.Errorf("setns back to the original namespace failed, retiring this thread: %v", err)
+			return
 		}
+		runtime.UnlockOSThread()
 	}()
 	fn()
 }
