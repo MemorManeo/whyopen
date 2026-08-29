@@ -15,7 +15,7 @@ func listenIn(t *testing.T, ns string, port string) {
 		"s.bind(('0.0.0.0'," + port + "));s.listen(1)\n" +
 		"sys.stderr.write('up\\n');sys.stderr.flush()\n" +
 		"import time;time.sleep(300)\n"
-	startBackground(t, ns, "python3", "-c", script)
+	startBackground(t, ns, "up", "python3", "-c", script)
 }
 
 // A UFW-shaped ruleset: default deny on INPUT, an established accept that

@@ -7,14 +7,15 @@
 package integration
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MemorManeo/whyopen/internal/facts"
 	"github.com/MemorManeo/whyopen/internal/model"
@@ -82,6 +83,13 @@ func newNetns(t *testing.T) string {
 	hostSide := "veth-" + ns
 	nsSide := "vethn-" + ns
 
+	// The name derives from the pid, so it can recur across runs. A run
+	// killed by a CI timeout skips its own cleanup and leaves the namespace
+	// behind, which would otherwise fail this add with "File exists" for a
+	// reason that has nothing to do with the code under test. Its absence
+	// here is the common case, not a failure.
+	exec.Command("ip", "netns", "del", ns).Run()
+
 	run(t, "ip", "netns", "add", ns)
 	t.Cleanup(func() {
 		exec.Command("ip", "netns", "del", ns).Run()
@@ -140,9 +148,14 @@ func evaluate(f facts.Facts) []model.Verdict {
 }
 
 // startBackground runs a long-lived process inside the namespace and kills it
-// during cleanup. It waits for the process to announce readiness on stderr so
-// tests never race the listener.
-func startBackground(t *testing.T, ns string, name string, args ...string) {
+// during cleanup. It waits up to 10 seconds for the process to write ready as
+// a line on its stderr before returning, so tests never race the listener. A
+// line that does not match ready fails the test with what was actually read,
+// which surfaces a startup traceback where it is useful instead of letting it
+// masquerade as readiness; an early exit or a stall past the deadline fails
+// the test immediately too, rather than hanging until the suite's own
+// timeout kills the whole binary.
+func startBackground(t *testing.T, ns string, ready string, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("ip", append([]string{"netns", "exec", ns, name}, args...)...)
 	stderr, err := cmd.StderrPipe()
@@ -152,14 +165,40 @@ func startBackground(t *testing.T, ns string, name string, args ...string) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start %s: %v", name, err)
 	}
+	// A single goroutine owns cmd.Wait for the rest of this helper's life:
+	// calling it more than once, or concurrently with itself from a second
+	// goroutine, races the *exec.Cmd internal state. Cleanup below waits on
+	// waitDone rather than calling Wait itself, so kill-and-wait still
+	// happens, just funnelled through this one call site.
+	var waitErr error
+	waitDone := make(chan struct{})
+	go func() {
+		waitErr = cmd.Wait()
+		close(waitDone)
+	}()
 	t.Cleanup(func() {
 		if cmd.Process != nil {
 			cmd.Process.Kill()
 		}
-		cmd.Wait()
+		<-waitDone
 	})
-	buf := make([]byte, 3)
-	if _, err := io.ReadFull(stderr, buf); err != nil {
-		t.Fatalf("waiting for %s to come up: %v", name, err)
+
+	lines := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		if scanner.Scan() {
+			lines <- scanner.Text()
+		}
+	}()
+
+	select {
+	case line := <-lines:
+		if line != ready {
+			t.Fatalf("%s did not signal readiness on stderr: got %q, want %q", name, line, ready)
+		}
+	case <-waitDone:
+		t.Fatalf("%s exited before signalling readiness: %v", name, waitErr)
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s did not signal readiness within 10s", name)
 	}
 }
