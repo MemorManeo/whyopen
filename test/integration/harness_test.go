@@ -85,12 +85,19 @@ func newNetns(t *testing.T) string {
 	hostSide := "veth-" + ns
 	nsSide := "vethn-" + ns
 
-	// The name derives from the pid, so it can recur across runs. A run
+	// The names derive from the pid, so they can recur across runs. A run
 	// killed by a CI timeout skips its own cleanup and leaves the namespace
-	// behind, which would otherwise fail this add with "File exists" for a
-	// reason that has nothing to do with the code under test. Its absence
-	// here is the common case, not a failure.
+	// behind, which would otherwise fail the adds below with "File exists"
+	// for a reason that has nothing to do with the code under test. Their
+	// absence here is the common case, not a failure.
+	//
+	// The host-side veth needs its own delete, not just the namespace's.
+	// Freeing the namespace usually takes the pair with it, but a hard kill
+	// also orphans the python3 listener, which sleeps for 300 seconds and
+	// holds the dead namespace alive; for those five minutes the veth
+	// outlives its namespace and the next run collides with it.
 	exec.Command("ip", "netns", "del", ns).Run()
+	exec.Command("ip", "link", "del", hostSide).Run()
 
 	run(t, "ip", "netns", "add", ns)
 	t.Cleanup(func() {

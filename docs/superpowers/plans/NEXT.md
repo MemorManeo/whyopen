@@ -28,14 +28,21 @@ other things. Blocked on one small decision: `Verdict.DNAT` is currently an
 exported field of an unexported type, which has to become exportable before
 it can be serialised.
 
-## 3. Decode `xt recent`
+## 3. Decode `xt recent` (landed in v0.1)
 
-The single highest-value decoder left. UFW's `ufw limit ssh` emits it, so on
-a stock UFW host port 22 reports `unknown` today, which is the most visible
-gap in the tool's output. Needs `xt_recent_mtinfo` decoded well enough to
-tell `--set` (always matches, no constraint) from `--update --seconds N
---hitcount M` (cannot match a first packet from an unseen source). Verify the
-struct offsets against real bytes rather than from memory.
+Done, and kept here because the reasoning is still the record of why. UFW's
+`ufw limit ssh` emits it, so port 22 on a stock UFW host used to report
+`unknown`, which was the most visible gap in the tool's output. The decoder
+is in `internal/collect/nftconv.go` and the evaluator's `recent` case in
+`internal/model/match.go`, written against bytes captured from a live kernel
+and recorded in `docs/decisions/0003-xt-recent-layout.md` rather than from
+memory, as this entry asked. `TestUFWLimitSSHResolvesReachable` proves port
+22 resolves against a real kernel.
+
+What is left of it: only the three captured `check_set` bit patterns decode.
+`--remove` was never captured, so a `--remove` rule still reports `unknown`,
+and closing that needs a fresh capture rather than an inference from the
+pattern the other three follow.
 
 ## 4. Native nftables expression decoding
 

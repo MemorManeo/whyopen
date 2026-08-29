@@ -62,13 +62,15 @@ func TestRealDockerPublishIsReported(t *testing.T) {
 	run(t, "docker", "run", "-d", "--name", name,
 		"-p", "0.0.0.0:18080:80", "nginx:alpine")
 
-	out, err := exec.Command(binaryPath, "collect").Output()
+	// Combined output, and both failures report it, for the reason
+	// collectIn takes it: a CI log is the only evidence this run leaves.
+	out, err := exec.Command(binaryPath, "collect").CombinedOutput()
 	if err != nil {
-		t.Fatalf("collect: %v", err)
+		t.Fatalf("collect: %v\noutput:\n%s", err, out)
 	}
 	var f facts.Facts
 	if err := json.Unmarshal(out, &f); err != nil {
-		t.Fatalf("decode facts: %v", err)
+		t.Fatalf("decode facts: %v\noutput:\n%s", err, out)
 	}
 	if f.Ruleset.ReadFailed {
 		t.Fatalf("ruleset read failed: %+v", f.Warnings)

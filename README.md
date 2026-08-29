@@ -29,9 +29,10 @@ extension that `ufw limit ssh` uses, and a facts document preserves what the
 collector understood when it ran, so those two rules still carry no decoded
 payload and whyopen still declines to guess about them. A current run
 against a live UFW host decodes them and resolves port 22, which the
-integration suite asserts against a real kernel. The table above is printed
-exactly as it was collected rather than edited to show what a fresh run
-would produce.
+integration suite asserts against a real kernel. The verdicts above are as
+collected, not edited to show what a fresh run would produce; only the owner
+names are generalised, as noted above, and the table shows nine of the
+thirty-nine rows.
 
 - `RESULT` is `reachable` (a packet from the internet zone reaches this
   socket), `filtered` (some rule or bind address stops it), or `unknown`

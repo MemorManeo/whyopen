@@ -47,10 +47,21 @@ Most tests confine themselves to a throwaway network namespace named
 `wo<pid>` joined to the host by a veth pair, and delete both on cleanup.
 Inside that namespace they create bridges, add addresses from the
 documentation range `203.0.113.0/24`, set `net.ipv4.ip_forward`, load
-iptables and nft rulesets and start a `python3` listener. A run killed
-mid-flight (a CI timeout, a Ctrl-C) skips its own cleanup and leaves the
-namespace and its veth behind; the harness pre-deletes both by name on the
-next run, so this is self-healing rather than fatal.
+iptables and nft rulesets and start a `python3` listener.
+
+Two effects reach past the namespace. The veth's host-side end, `veth-wo<pid>`,
+lives in the **root namespace** and carries the global-scope address
+`203.0.113.1/24` and its connected route for the duration of every
+namespace test. And the sysctl handling below touches a root-namespace
+file. Everything else stays inside the namespace.
+
+A run killed mid-flight (a CI timeout, a Ctrl-C) skips its own cleanup and
+leaves the namespace and its host-side veth behind; the harness pre-deletes
+both by name on the next run, so this is self-healing rather than fatal.
+The veth needs its own pre-delete because a hard kill also orphans the
+`python3` listener, which sleeps for 300 seconds and holds the dead
+namespace alive, so for those minutes the veth outlives the namespace whose
+deletion would otherwise have taken it.
 
 The namespace tests read the root namespace's `net.ipv4.ip_forward` before
 writing the namespace's own, and restore it on cleanup only if it actually
