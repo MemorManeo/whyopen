@@ -428,3 +428,36 @@ func TestUndecodedRecentIsStillUnknown(t *testing.T) {
 		t.Fatalf("undecoded recent = %v, want unknown", out)
 	}
 }
+
+// A decoded recent whose mode this build does not model must poison rather
+// than fall through to a silent no-match. The --facts path can hand a v0.1
+// binary a document a later version wrote, so an unfamiliar mode name is a
+// live possibility and not merely a typo guard.
+func TestRecentUnrecognisedModeIsUnknown(t *testing.T) {
+	for _, mode := range []string{"", "remoove", "reap", "SET"} {
+		r := facts.Rule{Handle: 5, Exprs: []facts.Expr{
+			{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent", Decoded: true,
+				Recent: &facts.RecentInfo{Mode: mode, Name: "SSH"}}},
+			{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "drop"}},
+		}}
+		if out, _ := MatchRule(testPacket(), r); out != OutcomeUnknown {
+			t.Fatalf("recent mode %q = %v, want unknown", mode, out)
+		}
+	}
+}
+
+// The three modes with no dedicated test above still resolve to a no-match
+// for a first packet from an unseen source, so enumerating the modes did not
+// turn a resolvable rule into an unknown one.
+func TestRecentCheckingAndRemoveModesDoNotMatch(t *testing.T) {
+	for _, mode := range []string{"check", "rcheck", "remove"} {
+		r := facts.Rule{Handle: 6, Exprs: []facts.Expr{
+			{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent", Decoded: true,
+				Recent: &facts.RecentInfo{Mode: mode, Name: "SSH"}}},
+			{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "drop"}},
+		}}
+		if out, _ := MatchRule(testPacket(), r); out != OutcomeNoMatch {
+			t.Fatalf("recent mode %q = %v, want no match", mode, out)
+		}
+	}
+}

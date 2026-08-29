@@ -316,11 +316,25 @@ func xtExpr(pkt *Packet, x *facts.XtExpr) (Outcome, Action, bool) {
 			return OutcomeUnknown, none, false
 		}
 		// whyopen's synthetic packet is always a first connection from a
-		// source the recent list has never seen, which collapses every
-		// mode to one test: set records the source and always matches;
-		// every checking mode (check, rcheck, update) cannot match an
-		// empty list; remove has nothing to remove. Only "set" hits.
-		hit := x.Recent.Mode == "set"
+		// source the recent list has never seen, which is what makes each
+		// mode decidable: set records the source and always matches; every
+		// checking mode (check, rcheck, update) cannot match an empty list;
+		// remove has nothing to remove. Only "set" hits.
+		//
+		// A mode name this build does not model, whether a typo or a value
+		// written by a later version through the --facts path, is the
+		// genuine "cannot resolve" case. Reading it as a silent no-match
+		// would resolve a constraint whyopen cannot evaluate, so it
+		// poisons the verdict instead.
+		var hit bool
+		switch x.Recent.Mode {
+		case "set":
+			hit = true
+		case "check", "rcheck", "update", "remove":
+			hit = false
+		default:
+			return OutcomeUnknown, none, false
+		}
 		if x.Recent.Invert {
 			hit = !hit
 		}
