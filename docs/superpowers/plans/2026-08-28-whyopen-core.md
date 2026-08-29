@@ -1332,7 +1332,7 @@ func readTrimmed(path string) string {
 
 // parseCgroup extracts a systemd unit or a Docker container id from the
 // cgroup v2 path, for example
-// "0::/system.slice/webapp-music-backend.service" or
+// "0::/system.slice/my-app.service" or
 // "0::/system.slice/docker-<64 hex>.scope".
 func parseCgroup(s string) (unit, container string) {
 	for _, line := range strings.Split(s, "\n") {

@@ -1,4 +1,4 @@
-whyopen
+# whyopen
 
 `whyopen` answers one question: what is actually reachable from the
 internet on this Linux host, and which nftables rule decides that. Run it
@@ -6,14 +6,25 @@ and read the table.
 
 ```
 $ sudo whyopen check
-RESULT     PORT       FAMILY  OWNER                BIND       WHY
-reachable  22/tcp     IPv4    ssh.service          0.0.0.0    via 203.0.113.10: delivered locally, so the input hook decides
-reachable  80/tcp     IPv4    -                    0.0.0.0    via 203.0.113.10: delivered locally, so the input hook decides
-reachable  443/tcp    IPv4    -                    0.0.0.0    via 203.0.113.10: delivered locally, so the input hook decides
-filtered   5432/tcp   IPv4    my-postgres          127.0.0.1  bound to 127.0.0.1, which does not match any host address the internet can reach
-filtered   6379/tcp   IPv4    my-redis             127.0.0.1  bound to 127.0.0.1, which does not match any host address the internet can reach
-unknown    9000/tcp   IPv6    my-app               ::         DNAT target is not on any known interface subnet, so the forward path cannot be resolved
+RESULT     PORT       FAMILY  OWNER                       BIND        WHY
+reachable  80/tcp     IPv4    nginx.service               0.0.0.0     via 203.0.113.10: delivered locally, so the input hook decides
+reachable  80/tcp     IPv6    nginx.service               ::          via 2001:db8::10: delivered locally, so the input hook decides
+reachable  443/tcp    IPv4    nginx.service               0.0.0.0     via 203.0.113.10: delivered locally, so the input hook decides
+reachable  443/tcp    IPv6    nginx.service               ::          via 2001:db8::10: delivered locally, so the input hook decides
+unknown    22/tcp     IPv4    ssh.service                 0.0.0.0     rule 104966 in filter/ufw-user-input uses an expression whyopen cannot resolve
+unknown    22/tcp     IPv6    ssh.service                 ::          rule 65113 in filter/ufw6-user-input uses an expression whyopen cannot resolve
+filtered   4319/tcp   IPv4    node                        ::          fell through to the drop policy of filter/INPUT
+filtered   5432/tcp   IPv4    postgresql@16-main.service  127.0.0.1   bound to 127.0.0.1, which does not match any host address the internet can reach
+filtered   8888/tcp   IPv4    searxng                     127.0.0.1   bound to 127.0.0.1, which does not match any host address the internet can reach
 ```
+
+That is a real run against an Ubuntu 24.04 host with UFW and Docker, 275
+rules across 89 chains, with service and container names generalised. The
+two `unknown` rows are genuine: UFW's `ufw limit ssh` uses the `xt recent`
+extension, which whyopen does not decode yet, so it declines to guess about
+port 22 rather than reporting it open. That exact snapshot is committed as
+`testdata/facts/ufw-docker-host.json` and the verdicts above are asserted by
+the test suite.
 
 - `RESULT` is `reachable` (a packet from the internet zone reaches this
   socket), `filtered` (some rule or bind address stops it), or `unknown`
