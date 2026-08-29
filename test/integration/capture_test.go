@@ -128,14 +128,15 @@ func captureXtPayloads(t *testing.T, ns string, name string) []xtPayload {
 // statement visible in the nft text with no matching Go type in the log
 // below is that gap, not a bug in this test.
 //
-// It asserts that the capture found at least one expression whyopen
-// currently reports as unknown, so the test fails once these shapes become
-// fully decodable and the record goes stale, and, more strongly, that the
-// unknown expressions span at least two distinct Go types: native ct state
-// (expr.Ct has no case in ConvertExprs at all) and at least one named or
-// anonymous set membership test (expr.Lookup, likewise undecoded), which
-// this ruleset's interface set, port set and "meta l4proto { tcp, udp }"
-// match all produce independently of one another.
+// It also enforces decision 0004's two specific claims by name: that
+// native ct state (*expr.Ct, which has no case in ConvertExprs at all) and
+// set membership (*expr.Lookup, likewise undecoded, produced here by the
+// interface set, the port set and the "meta l4proto { tcp, udp }" match
+// independently of one another) are both still among the expressions
+// whyopen reports as unknown. Naming the two types is the point: merely
+// counting distinct undecoded types would stay green once v0.2 decodes
+// these two, as long as any other two shapes were still undecoded, and
+// 0004 would go stale in silence.
 func TestCaptureFirewalldExpressions(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "nft")
@@ -202,8 +203,16 @@ table inet whyopen_fw {
 	if len(census.unknown) == 0 {
 		t.Fatalf("expected at least one expression whyopen currently reports as unknown, found none: either this shape no longer reaches the kernel as written, or whyopen has grown a decoder for everything this ruleset produces and this record is stale")
 	}
-	if len(census.unknown) < 2 {
-		t.Fatalf("expected the unknown expressions to span at least 2 distinct Go types, got %d: %v", len(census.unknown), census.unknown)
+	// The two types decision 0004 names as undecoded, asserted individually
+	// so that decoding either one fails this test rather than being masked
+	// by some other shape that happens to remain unknown.
+	for _, want := range []string{
+		fmt.Sprintf("%T", &expr.Ct{}),
+		fmt.Sprintf("%T", &expr.Lookup{}),
+	} {
+		if census.unknown[want] == 0 {
+			t.Fatalf("expected %s among the expressions whyopen reports as unknown, found none: decision 0004's claims no longer hold and docs/decisions/0004-firewalld-expressions.md needs revisiting. Unknown census: %v", want, census.unknown)
+		}
 	}
 }
 
