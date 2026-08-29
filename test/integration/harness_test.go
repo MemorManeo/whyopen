@@ -156,15 +156,22 @@ func inNetns(t *testing.T, ns string, fn func()) {
 // collectIn runs the real binary inside the namespace and decodes its facts
 // document. Running the binary rather than calling the collector in-process
 // avoids setns and thread pinning, and tests the path a user actually takes.
+//
+// It takes the combined output, as run() does, because a CI log is the only
+// evidence this suite leaves behind: a bare "exit status 3" with the
+// binary's own stderr discarded says nothing about why collection failed.
+// whyopen collect writes the facts document to stdout and nothing at all to
+// stderr on the success path, so folding the two together cannot corrupt
+// the JSON it decodes.
 func collectIn(t *testing.T, ns string) facts.Facts {
 	t.Helper()
-	out, err := exec.Command("ip", "netns", "exec", ns, binaryPath, "collect").Output()
+	out, err := exec.Command("ip", "netns", "exec", ns, binaryPath, "collect").CombinedOutput()
 	if err != nil {
-		t.Fatalf("collect in %s: %v", ns, err)
+		t.Fatalf("collect in %s: %v\noutput:\n%s", ns, err, out)
 	}
 	var f facts.Facts
 	if err := json.Unmarshal(out, &f); err != nil {
-		t.Fatalf("decode facts: %v", err)
+		t.Fatalf("decode facts: %v\noutput:\n%s", err, out)
 	}
 	if f.Ruleset.ReadFailed {
 		t.Fatalf("ruleset read failed inside the namespace, warnings: %+v", f.Warnings)
