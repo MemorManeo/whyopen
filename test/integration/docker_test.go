@@ -32,6 +32,16 @@ func TestRealDockerPublishIsReported(t *testing.T) {
 	// A CI runner sits behind NAT with only private addresses, and whyopen
 	// correctly refuses to conclude anything about a host with no global
 	// address. Give it one so the test asserts something.
+	//
+	// Pre-delete it for the same reason the namespace harness pre-deletes
+	// its netns and this test pre-sweeps its container: a run killed by a
+	// CI timeout skips its own cleanup, and a leftover whyopen0 would fail
+	// this add with "File exists" for a reason unrelated to the code under
+	// test. It matters more here than for the namespace, because the
+	// leftover interface keeps carrying a global-scope address and so
+	// changes what whyopen reports about the host itself. Its absence is
+	// the common case, not a failure.
+	exec.Command("ip", "link", "del", "whyopen0").Run()
 	run(t, "ip", "link", "add", "whyopen0", "type", "dummy")
 	t.Cleanup(func() { exec.Command("ip", "link", "del", "whyopen0").Run() })
 	run(t, "ip", "addr", "add", "203.0.113.10/32", "dev", "whyopen0")
