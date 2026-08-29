@@ -84,11 +84,29 @@ leaves those off but enables forwarding on one interface
 - **whyopen is read-only.** It never creates, changes, or deletes an
   nftables rule, a socket, or anything else on the host. It only reads.
 
+## Install
+
+Download a release archive for your architecture (amd64 or arm64) from the
+[releases page](https://github.com/MemorManeo/whyopen/releases), extract it,
+and put `whyopen` on your `PATH`. Debian and Ubuntu users can instead grab
+the `.deb` package; Fedora, RHEL and openSUSE users the `.rpm`. Both install
+`whyopen` to `/usr/bin`.
+
+If you have Go installed:
+
+```
+go install github.com/MemorManeo/whyopen/cmd/whyopen@latest
+```
+
+Either way, `whyopen` needs root (or `CAP_NET_ADMIN`) to read the nftables
+ruleset; see Requirements below.
+
 ## Usage
 
 ```
 whyopen collect [-o FILE]                     snapshot this host into a facts document
 whyopen check [-facts FILE] [-explain PORT]    report what is reachable, and why
+whyopen version                               print the build version
 ```
 
 `whyopen collect` writes a portable JSON snapshot (a "facts document") of

@@ -20,6 +20,7 @@ Usage:
   whyopen collect [-o FILE]        snapshot this host into a facts document
   whyopen check [-facts FILE] [-explain PORT]
                                     report what is reachable, and why
+  whyopen version                  print the build version
 
 whyopen is read-only. It never creates, changes or deletes a rule.
 `
@@ -28,6 +29,13 @@ whyopen is read-only. It never creates, changes or deletes a rule.
 const (
 	exitOK    = 0
 	exitError = 3
+)
+
+// Set by the linker at release time; the defaults are what a local build reports.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
 )
 
 func main() {
@@ -40,6 +48,8 @@ func main() {
 		os.Exit(runCollect(os.Args[2:]))
 	case "check":
 		os.Exit(runCheck(os.Args[2:]))
+	case "version":
+		os.Exit(runVersion())
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		os.Exit(exitOK)
@@ -47,6 +57,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n\n%s", os.Args[1], usage)
 		os.Exit(exitError)
 	}
+}
+
+func runVersion() int {
+	fmt.Printf("whyopen %s (commit %s, built %s)\n", version, commit, date)
+	return exitOK
 }
 
 func runCollect(args []string) int {
