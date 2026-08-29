@@ -360,3 +360,38 @@ func TestUFWLimitSSHResolvesReachable(t *testing.T) {
 			v.Result, v.Reason)
 	}
 }
+
+// The headline claim for native ct: "ct state established,related accept",
+// written with nft rather than iptables, decodes and resolves a port as
+// reachable instead of unknown. This is the comma-list shape
+// docs/decisions/0004-firewalld-expressions.md found compiles to Ct,
+// Bitwise, Cmp; the brace-list shape ("ct state { established, related }
+// accept") compiles to Ct, Lookup instead and stays unknown until Lookup is
+// decoded, deliberately out of scope here.
+func TestNativeCtStateAcceptResolvesReachable(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	listenIn(t, ns, "0.0.0.0", "22")
+
+	applyNftRuleset(t, ns, `
+table inet filter {
+	chain input {
+		type filter hook input priority 0; policy drop;
+		ct state established,related accept
+		tcp dport 22 accept
+	}
+}
+`)
+
+	v := verdictFor(evaluate(collectIn(t, ns)), 22, "ip")
+	if v == nil {
+		t.Fatal("no verdict for port 22")
+	}
+	if v.Result != "reachable" {
+		t.Fatalf("port 22 = %s (%s), want reachable: a fresh SYN is state new, so "+
+			"\"ct state established,related accept\" must not match, leaving the plain "+
+			"\"tcp dport 22 accept\" to decide", v.Result, v.Reason)
+	}
+}

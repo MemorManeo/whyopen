@@ -141,6 +141,8 @@ func convertExpr(e expr.Any) facts.Expr {
 			Mask:           hex.EncodeToString(v.Mask),
 			Xor:            hex.EncodeToString(v.Xor),
 		}}
+	case *expr.Ct:
+		return convertCt(v)
 	case *expr.Verdict:
 		return facts.Expr{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{
 			Kind: verdictKindName(v.Kind), Chain: v.Chain,
@@ -172,6 +174,26 @@ func convertExpr(e expr.Any) facts.Expr {
 		// anonymous set lookup, a range) or terminate the rule.
 		return facts.Expr{Kind: facts.ExprUnknown, Note: fmt.Sprintf("%T", e)}
 	}
+}
+
+// convertCt decodes a native `ct` expression. Only CtKeySTATE loaded into a
+// destination register is modelled, following the posture of the recent and
+// addrtype cases: enumerate exactly what is understood and refuse
+// everything else, rather than guess. A native ct expression carries no
+// payload bytes of its own the way an xt extension does, so there is
+// nothing to fall back to for a key this build does not model, or for a
+// source-register load (which writes ct metadata, e.g. "ct mark set",
+// rather than reading it); both must leave the expression undecoded so the
+// verdict becomes unknown instead of silently ignoring what the key
+// actually constrains.
+func convertCt(v *expr.Ct) facts.Expr {
+	if v.Key != expr.CtKeySTATE || v.SourceRegister {
+		return facts.Expr{Kind: facts.ExprUnknown, Note: fmt.Sprintf("%T", v)}
+	}
+	return facts.Expr{Kind: facts.ExprCt, Ct: &facts.CtExpr{
+		Key:      "state",
+		Register: v.Register,
+	}}
 }
 
 func convertXt(kind, name string, rev uint32, info xt.InfoAny) *facts.XtExpr {

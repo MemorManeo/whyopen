@@ -1,6 +1,8 @@
 package model
 
 import (
+	"encoding/binary"
+	"encoding/hex"
 	"net/netip"
 	"testing"
 
@@ -459,5 +461,87 @@ func TestRecentCheckingAndRemoveModesDoNotMatch(t *testing.T) {
 		if out, _ := MatchRule(testPacket(), r); out != OutcomeNoMatch {
 			t.Fatalf("recent mode %q = %v, want no match", mode, out)
 		}
+	}
+}
+
+// ctBit mirrors the NF_CT_STATE_BIT values internal/collect/nftconv.go's
+// ctStateNames already carries (provenance: docs/decisions/0001), which the
+// kernel's native ct expression draws from the same enum, per this match.go
+// package's ctStateNewBit comment.
+const (
+	ctBitInvalid     = 0x1
+	ctBitEstablished = 0x2
+	ctBitRelated     = 0x4
+	ctBitNew         = 0x8
+)
+
+// natHex encodes v the way a real kernel lays out a ct-state register: 4
+// bytes, native byte order. See ctBytes's doc comment in match.go for why
+// that is the layout to match.
+func natHex(v uint32) string {
+	b := make([]byte, 4)
+	binary.NativeEndian.PutUint32(b, v)
+	return hex.EncodeToString(b)
+}
+
+// The comma-list form of "ct state established,related accept"
+// (docs/decisions/0004) compiles to Ct, Bitwise, Cmp. A fresh SYN is state
+// new, so it must not match, exactly like TestConntrackEstablishedDoesNotMatchNewSYN
+// already protects for the xt shape.
+func TestNativeCtStateCommaListDoesNotMatchNewSYN(t *testing.T) {
+	rule := facts.Rule{Handle: 25, Exprs: []facts.Expr{
+		{Kind: facts.ExprCt, Ct: &facts.CtExpr{Key: "state", Register: 1}},
+		{Kind: facts.ExprBitwise, Bitwise: &facts.BitwiseExpr{SourceRegister: 1, DestRegister: 1, Len: 4,
+			Mask: natHex(ctBitEstablished | ctBitRelated), Xor: natHex(0)}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: natHex(ctBitEstablished | ctBitRelated)}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeNoMatch {
+		t.Fatalf("out=%v, want no match: a new SYN is not established or related", out)
+	}
+}
+
+// "ct state invalid drop" (docs/decisions/0004) must likewise not match a
+// fresh SYN.
+func TestNativeCtStateInvalidDoesNotMatchNewSYN(t *testing.T) {
+	rule := facts.Rule{Handle: 26, Exprs: []facts.Expr{
+		{Kind: facts.ExprCt, Ct: &facts.CtExpr{Key: "state", Register: 1}},
+		{Kind: facts.ExprBitwise, Bitwise: &facts.BitwiseExpr{SourceRegister: 1, DestRegister: 1, Len: 4,
+			Mask: natHex(ctBitInvalid), Xor: natHex(0)}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: natHex(ctBitInvalid)}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "drop"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeNoMatch {
+		t.Fatalf("out=%v, want no match: a new SYN is not invalid", out)
+	}
+}
+
+// The positive case: "ct state new accept" matches the flag the synthetic
+// packet actually carries, proving the Ct/Bitwise/Cmp trio can resolve to a
+// match, not just to no-match.
+func TestNativeCtStateNewMatches(t *testing.T) {
+	rule := facts.Rule{Handle: 27, Exprs: []facts.Expr{
+		{Kind: facts.ExprCt, Ct: &facts.CtExpr{Key: "state", Register: 1}},
+		{Kind: facts.ExprBitwise, Bitwise: &facts.BitwiseExpr{SourceRegister: 1, DestRegister: 1, Len: 4,
+			Mask: natHex(ctBitNew), Xor: natHex(0)}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: natHex(ctBitNew)}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, act := MatchRule(testPacket(), rule); out != OutcomeMatch || act.Kind != "accept" {
+		t.Fatalf("out=%v act=%+v, want match/accept: a new SYN is state new", out, act)
+	}
+}
+
+// A ct key whyopen does not model must not be guessed at, even if it somehow
+// reaches the evaluator: a hand-built or forward-compatible facts document
+// can carry one even though internal/collect/nftconv.go's convertCt never
+// produces one itself.
+func TestNativeCtUnmodelledKeyIsUnknown(t *testing.T) {
+	rule := facts.Rule{Handle: 28, Exprs: []facts.Expr{
+		{Kind: facts.ExprCt, Ct: &facts.CtExpr{Key: "mark", Register: 1}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule); out != OutcomeUnknown {
+		t.Fatalf("out=%v, want unknown: \"mark\" is not a modelled ct key", out)
 	}
 }

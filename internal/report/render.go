@@ -25,6 +25,8 @@ func RenderRule(r facts.Rule) string {
 			pending = payloadName(e.Payload)
 		case facts.ExprBitwise:
 			pendingMask = e.Bitwise.Mask
+		case facts.ExprCt:
+			pending = renderCtKey(e.Ct.Key)
 		case facts.ExprCmp:
 			if pending == "" {
 				continue
@@ -83,6 +85,18 @@ func payloadName(p *facts.PayloadExpr) string {
 		return "dport"
 	}
 	return fmt.Sprintf("%s@%d,%d", p.Base, p.Offset, p.Len)
+}
+
+// renderCtKey names the field a native `ct` expression loaded, the way
+// payloadName does for a payload load. "state" is the only key whyopen's
+// collector ever emits (see facts.CtExpr); the fallback exists only so a
+// hand-built or forward-compatible facts document still renders something
+// legible rather than an empty field name.
+func renderCtKey(key string) string {
+	if key == "state" {
+		return "ct state"
+	}
+	return "ct " + key
 }
 
 func opSymbol(op string) string {

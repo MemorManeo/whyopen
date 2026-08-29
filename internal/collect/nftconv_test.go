@@ -10,6 +10,7 @@ import (
 
 	"github.com/MemorManeo/whyopen/internal/facts"
 	"github.com/MemorManeo/whyopen/internal/model"
+	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 	"github.com/google/nftables/xt"
 )
@@ -338,6 +339,44 @@ func TestConvertConntrackStateAliasDecodesNormally(t *testing.T) {
 	}
 }
 
+// The comma-list form of "ct state established,related accept"
+// (docs/decisions/0004) compiles to a bare Ct expression loading the state
+// key into a destination register, decoded independently of whatever
+// Bitwise/Cmp follows it.
+func TestConvertCtState(t *testing.T) {
+	got := ConvertExprs([]expr.Any{&expr.Ct{Register: 1, Key: expr.CtKeySTATE}})
+	if got[0].Kind != facts.ExprCt || got[0].Ct == nil {
+		t.Fatalf("ct = %+v, want a decoded ct expression", got[0])
+	}
+	if got[0].Ct.Key != "state" || got[0].Ct.Register != 1 {
+		t.Fatalf("ct = %+v, want key state, register 1", got[0].Ct)
+	}
+}
+
+// Any CtKey other than STATE constrains something whyopen does not model
+// (docs/decisions/0004 only exercised STATE), so it must stay unknown
+// rather than being wrapped as though it were understood.
+func TestConvertCtUnmodelledKeyStaysUnknown(t *testing.T) {
+	for _, key := range []expr.CtKey{expr.CtKeyMARK, expr.CtKeySTATUS, expr.CtKeyDIRECTION} {
+		got := ConvertExprs([]expr.Any{&expr.Ct{Register: 1, Key: key}})
+		if got[0].Kind != facts.ExprUnknown || got[0].Note != "*expr.Ct" {
+			t.Fatalf("key %v = %+v, want unknown noting *expr.Ct", key, got[0])
+		}
+	}
+}
+
+// A source-register Ct writes ct metadata ("ct mark set", for instance)
+// rather than reading it, a different statement shape whyopen does not
+// model even for the state key, which nft does not actually let you set.
+// Refusing it defensively keeps the collector from ever treating a write as
+// a match.
+func TestConvertCtSourceRegisterStaysUnknown(t *testing.T) {
+	got := ConvertExprs([]expr.Any{&expr.Ct{Register: 1, Key: expr.CtKeySTATE, SourceRegister: true}})
+	if got[0].Kind != facts.ExprUnknown || got[0].Note != "*expr.Ct" {
+		t.Fatalf("source-register ct = %+v, want unknown", got[0])
+	}
+}
+
 // RULING 27: nft's log statement writes a line and falls through. It cannot
 // constrain a match or terminate a rule, so poisoning on it is a false
 // unknown.
@@ -345,6 +384,59 @@ func TestConvertNativeLogIsTransparent(t *testing.T) {
 	got := ConvertExprs([]expr.Any{&expr.Log{}})
 	if got[0].Kind != facts.ExprOther || got[0].Note != "log" {
 		t.Fatalf("log = %+v, want ExprOther with note \"log\"", got[0])
+	}
+}
+
+// The native comma-list shape end to end: a Ct/Bitwise/Cmp trio built the
+// way github.com/google/nftables's own fixtures build one for "ct state
+// established,related" (nftables_test.go, integration/nft_test.go: Register
+// 1, Len 4, NativeEndian operands, Cmp neq against zero), run through
+// ConvertExprs and then Evaluate exactly like
+// TestStateShapedRulesResolveThroughEvaluate does for the xt shape. Port 22
+// falls through the established/related accept, since a fresh SYN is state
+// new, to a plain "tcp dport 22 accept"; port 5432 has no such rule and
+// stays behind the chain's drop policy.
+func TestNativeCtStateShapedRulesResolveThroughEvaluate(t *testing.T) {
+	acceptEstablishedRelated := []expr.Any{
+		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4,
+			Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED),
+			Xor:  binaryutil.NativeEndian.PutUint32(0)},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0, 0, 0, 0}},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	}
+	acceptPort22 := []expr.Any{
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x00, 0x16}},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	}
+
+	f := facts.Facts{
+		SchemaVersion: facts.SchemaVersion,
+		Host: facts.Host{Interfaces: []facts.Interface{{Name: "eth0", Index: 2, Up: true,
+			Addresses: []facts.Addr{{IP: "203.0.113.10", Prefix: 24, Family: "ip", Scope: "global"}}}}},
+		Sockets: []facts.Socket{
+			{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 22, Unit: "ssh.service"},
+			{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 5432, Unit: "postgres.service"},
+		},
+		Ruleset: facts.Ruleset{Tables: []facts.Table{{Family: "inet", Name: "filter", Chains: []facts.Chain{{
+			Name: "input", Base: true, Hook: "input", Priority: 0, Policy: "drop",
+			Rules: []facts.Rule{
+				{Handle: 1, Exprs: ConvertExprs(acceptEstablishedRelated)},
+				{Handle: 2, Exprs: ConvertExprs(acceptPort22)},
+			},
+		}}}}},
+	}
+
+	want := map[uint16]string{22: "reachable", 5432: "filtered"}
+	vs := model.Evaluate(f, model.InternetZone())
+	if len(vs) != 2 {
+		t.Fatalf("got %d verdicts, want 2: %+v", len(vs), vs)
+	}
+	for _, v := range vs {
+		if v.Result != want[v.Endpoint.Port] {
+			t.Fatalf("port %d = %q (%s), want %q", v.Endpoint.Port, v.Result, v.Reason, want[v.Endpoint.Port])
+		}
 	}
 }
 

@@ -116,6 +116,7 @@ const (
 	ExprCmp     ExprKind = "cmp"
 	ExprMeta    ExprKind = "meta"
 	ExprBitwise ExprKind = "bitwise"
+	ExprCt      ExprKind = "ct"
 	ExprVerdict ExprKind = "verdict"
 	ExprXt      ExprKind = "xt"
 	// ExprOther is recorded for completeness and is treated by the evaluator
@@ -139,6 +140,7 @@ type Expr struct {
 	Cmp     *CmpExpr     `json:"cmp,omitempty"`
 	Meta    *MetaExpr    `json:"meta,omitempty"`
 	Bitwise *BitwiseExpr `json:"bitwise,omitempty"`
+	Ct      *CtExpr      `json:"ct,omitempty"`
 	Verdict *VerdictExpr `json:"verdict,omitempty"`
 	Xt      *XtExpr      `json:"xt,omitempty"`
 	Note    string       `json:"note,omitempty"`
@@ -169,6 +171,21 @@ type BitwiseExpr struct {
 	Len            uint32 `json:"len"`
 	Mask           string `json:"mask"`
 	Xor            string `json:"xor"`
+}
+
+// CtExpr is a native `ct` expression: it loads one piece of conntrack
+// metainformation into a register for a later Bitwise/Cmp (the comma-list
+// form of "ct state", e.g. "ct state established,related accept") or Lookup
+// (the brace-list form, e.g. "ct state { established, related } accept",
+// not yet decoded) to test. Unlike XtExpr's ConntrackInfo, a native Ct
+// expression carries no bytes of its own describing what it constrains: the
+// key is everything, so whyopen models only CtKeySTATE, the only key
+// docs/decisions/0004-firewalld-expressions.md found a firewalld-shaped
+// ruleset actually emit. Any other key stays facts.ExprUnknown rather than
+// being wrapped here with nothing to distinguish it.
+type CtExpr struct {
+	Key      string `json:"key"` // state
+	Register uint32 `json:"register"`
 }
 
 // VerdictExpr also carries "reject", which is not an nftables verdict

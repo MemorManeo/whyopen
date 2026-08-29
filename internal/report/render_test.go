@@ -106,6 +106,24 @@ func TestRenderRuleShowsDecodedRecentMatch(t *testing.T) {
 	}
 }
 
+// A native ct state match renders through the same payload/bitwise/cmp
+// path as a subnet match, with the field named "ct state" instead of
+// "daddr". The mask (0x6, established|related) is not a contiguous prefix
+// from the top bit, so it renders as an explicit masked equality rather
+// than a false-precision CIDR-style form.
+func TestRenderRuleShowsNativeCtState(t *testing.T) {
+	r := facts.Rule{Handle: 43, Exprs: []facts.Expr{
+		{Kind: facts.ExprCt, Ct: &facts.CtExpr{Key: "state", Register: 1}},
+		{Kind: facts.ExprBitwise, Bitwise: &facts.BitwiseExpr{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: "06000000", Xor: "00000000"}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: "06000000"}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	got := RenderRule(r)
+	if !strings.Contains(got, "ct state & 0x06000000 == 0x06000000") {
+		t.Fatalf("RenderRule = %q, want the ct state match rendered", got)
+	}
+}
+
 // An undecoded recent match must still say so, not disappear or render as
 // though it were fully understood.
 func TestRenderRuleShowsUndecodedRecentMatch(t *testing.T) {

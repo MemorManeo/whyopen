@@ -2,6 +2,7 @@ package model
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"net/netip"
 	"slices"
@@ -47,6 +48,13 @@ func MatchRule(pkt *Packet, r facts.Rule) (Outcome, Action) {
 				out[i] = (src[i] & mask[i]) ^ xor[i]
 			}
 			regs[e.Bitwise.DestRegister] = out
+
+		case facts.ExprCt:
+			b, ok := ctBytes(pkt, e.Ct.Key)
+			if !ok {
+				return OutcomeUnknown, act
+			}
+			regs[e.Ct.Register] = b
 
 		case facts.ExprCmp:
 			data, err := hex.DecodeString(e.Cmp.Data)
@@ -222,6 +230,42 @@ func protoNumber(proto string) byte {
 		return 17
 	}
 	return 6
+}
+
+// ctStateNewBit is NF_CT_STATE_BIT(IP_CT_NEW): 1 << (IP_CT_NEW %
+// IP_CT_IS_REPLY + 1) = 1 << (2 % 3 + 1) = 0x8, per this machine's
+// linux/netfilter/nf_conntrack_common.h. It is the same enum
+// internal/collect/nftconv.go's ctStateNew already uses for the xt
+// conntrack extension (provenance in docs/decisions/0001), and
+// google/nftables's own expr.CtStateBitNEW constant (expr/ct.go) agrees.
+// model cannot import collect (it is stdlib-and-facts only, see the package
+// doc), so the value is repeated here rather than shared.
+const ctStateNewBit uint32 = 0x8
+
+// ctBytes synthesises the register content a native `ct` expression loads.
+// whyopen's synthetic packet is always the first connection from a source
+// the ruleset has never seen, so its conntrack state is always exactly the
+// NEW bit, never a union of bits. Only the state key is modelled, matching
+// the collector: any other key never reaches here, because
+// internal/collect/nftconv.go's convertCt leaves it facts.ExprUnknown, but
+// a hand-built or forward-compatible facts document could still name one,
+// so it is refused here too rather than guessed at.
+//
+// The register is 4 bytes wide in the host's native byte order:
+// github.com/google/nftables's own Ct+Bitwise fixtures (nftables_test.go,
+// integration/nft_test.go) build the mask/xor operands with
+// binaryutil.NativeEndian.PutUint32 at Len 4. A native register is raw
+// kernel memory with no netlink byte-swap applied on the way out, so
+// encoding the value the same way here is what makes the existing
+// Bitwise/Cmp machinery, written to resolve whatever mask and comparison
+// value a real kernel produced, resolve correctly against it.
+func ctBytes(pkt *Packet, key string) ([]byte, bool) {
+	if key != "state" || pkt.CtState != "new" {
+		return nil, false
+	}
+	b := make([]byte, 4)
+	binary.NativeEndian.PutUint32(b, ctStateNewBit)
+	return b, true
 }
 
 // xtExpr resolves an iptables-nft compatibility expression. The third return
