@@ -3,6 +3,7 @@
 package collect
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -17,11 +18,15 @@ import (
 // rulesetSource is the read-only slice of *nftables.Conn that whyopen uses.
 // Naming it as an interface keeps the read-only promise structural (no write
 // call is reachable from this file) and lets the traversal be tested without
-// netlink.
+// netlink. GetSets and GetSetElements were added in v0.2
+// (docs/decisions/0005-reading-set-elements.md) to decode expr.Lookup; no
+// further method may be added without a decision record of its own.
 type rulesetSource interface {
 	ListTables() ([]*nftables.Table, error)
 	ListChainsOfTableFamily(family nftables.TableFamily) ([]*nftables.Chain, error)
 	GetRules(t *nftables.Table, c *nftables.Chain) ([]*nftables.Rule, error)
+	GetSets(t *nftables.Table) ([]*nftables.Set, error)
+	GetSetElements(s *nftables.Set) ([]nftables.SetElement, error)
 }
 
 // Ruleset reads the full nftables ruleset over netlink. It is strictly
@@ -75,6 +80,13 @@ func readRuleset(c rulesetSource) (facts.Ruleset, []facts.Warning, error) {
 		}
 		ft := facts.Table{Family: fam, Name: t.Name}
 
+		sets, setWarns, setsFailed := readSets(c, t, fam)
+		warns = append(warns, setWarns...)
+		if setsFailed {
+			rs.ReadFailed = true
+		}
+		ft.Sets = sets
+
 		chains, err := listChains(t.Family)
 		if err != nil {
 			warns = append(warns, facts.Warning{
@@ -117,6 +129,68 @@ func readRuleset(c rulesetSource) (facts.Ruleset, []facts.Warning, error) {
 		rs.Tables = append(rs.Tables, ft)
 	}
 	return rs, warns, nil
+}
+
+// readSets reads one table's sets and each set's elements, following the
+// same degradation posture as chains and rules above: a failure becomes a
+// facts.Warning and the third return reports it (the caller folds that into
+// Ruleset.ReadFailed) rather than aborting the whole snapshot. A set whose
+// elements fail to read is omitted entirely rather than included without
+// them: any Lookup that names it then finds nothing in the document and
+// resolves unknown, the same outcome as naming a set that never existed,
+// which is the correct conservative answer either way.
+func readSets(c rulesetSource, t *nftables.Table, fam string) ([]facts.Set, []facts.Warning, bool) {
+	var warns []facts.Warning
+	nftSets, err := c.GetSets(t)
+	if err != nil {
+		warns = append(warns, facts.Warning{
+			Source:  "ruleset",
+			Message: fmt.Sprintf("list sets for %s/%s: %v", fam, t.Name, err),
+		})
+		return nil, warns, true
+	}
+
+	failed := false
+	var out []facts.Set
+	for _, s := range nftSets {
+		elems, err := c.GetSetElements(s)
+		if err != nil {
+			warns = append(warns, facts.Warning{
+				Source:  "ruleset",
+				Message: fmt.Sprintf("get elements for set %s/%s/%s: %v", fam, t.Name, s.Name, err),
+			})
+			failed = true
+			continue
+		}
+		out = append(out, convertSet(s, elems))
+	}
+	return out, warns, failed
+}
+
+// convertSet maps a netlink set and its elements onto whyopen's serializable
+// facts.Set. Interval, IsMap and Concatenation are carried through
+// unconditionally, decoded or not resolved is a judgement
+// internal/model/match.go makes, not this collector.
+func convertSet(s *nftables.Set, elems []nftables.SetElement) facts.Set {
+	fs := facts.Set{
+		Name:          s.Name,
+		Anonymous:     s.Anonymous,
+		ID:            s.ID,
+		Interval:      s.Interval,
+		IsMap:         s.IsMap,
+		Concatenation: s.Concatenation,
+	}
+	for _, e := range elems {
+		fe := facts.SetElement{Key: hex.EncodeToString(e.Key)}
+		if len(e.Val) > 0 {
+			fe.Val = hex.EncodeToString(e.Val)
+		}
+		if len(e.KeyEnd) > 0 {
+			fe.KeyEnd = hex.EncodeToString(e.KeyEnd)
+		}
+		fs.Elements = append(fs.Elements, fe)
+	}
+	return fs
 }
 
 func FamilyName(f nftables.TableFamily) string {

@@ -136,3 +136,43 @@ func TestRenderRuleShowsUndecodedRecentMatch(t *testing.T) {
 		t.Fatalf("RenderRule = %q, want the undecoded recent match named", got)
 	}
 }
+
+// The named-set form: "tcp dport @zone_public_ports accept".
+func TestRenderRuleShowsNamedSetLookup(t *testing.T) {
+	r := facts.Rule{Handle: 44, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+		{Kind: facts.ExprLookup, Lookup: &facts.LookupExpr{SourceRegister: 1, Set: "zone_public_ports"}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	got := RenderRule(r)
+	if !strings.Contains(got, "dport in @zone_public_ports") {
+		t.Fatalf("RenderRule = %q, want the named set lookup rendered", got)
+	}
+}
+
+// The anonymous-set form ("tcp dport { 22, 8080 } accept") carries no
+// usable name (decision 0004's census), so it renders by ID.
+func TestRenderRuleShowsAnonymousSetLookup(t *testing.T) {
+	r := facts.Rule{Handle: 45, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+		{Kind: facts.ExprLookup, Lookup: &facts.LookupExpr{SourceRegister: 1, SetID: 7}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	got := RenderRule(r)
+	if !strings.Contains(got, "dport in anonymous set 7") {
+		t.Fatalf("RenderRule = %q, want the anonymous set lookup rendered by ID", got)
+	}
+}
+
+// Invert ("tcp dport != @zone_public_ports") must be visible in --explain.
+func TestRenderRuleShowsInvertedSetLookup(t *testing.T) {
+	r := facts.Rule{Handle: 46, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+		{Kind: facts.ExprLookup, Lookup: &facts.LookupExpr{SourceRegister: 1, Set: "zone_public_ports", Invert: true}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "drop"}},
+	}}
+	got := RenderRule(r)
+	if !strings.Contains(got, "dport not in @zone_public_ports") {
+		t.Fatalf("RenderRule = %q, want the inverted set lookup rendered", got)
+	}
+}

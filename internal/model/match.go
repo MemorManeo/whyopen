@@ -15,8 +15,9 @@ const ifnameLen = 16
 
 // MatchRule evaluates one rule against the packet. It returns OutcomeUnknown
 // the moment it meets anything it cannot resolve, so a verdict is never built
-// on a guess.
-func MatchRule(pkt *Packet, r facts.Rule) (Outcome, Action) {
+// on a guess. sets is the rule's own table's sets (docs/decisions/0005),
+// needed to resolve a facts.ExprLookup; a rule with none can pass nil.
+func MatchRule(pkt *Packet, r facts.Rule, sets []facts.Set) (Outcome, Action) {
 	regs := map[uint32][]byte{}
 	act := Action{Kind: "none"}
 
@@ -55,6 +56,19 @@ func MatchRule(pkt *Packet, r facts.Rule) (Outcome, Action) {
 				return OutcomeUnknown, act
 			}
 			regs[e.Ct.Register] = b
+
+		case facts.ExprLookup:
+			reg, ok := regs[e.Lookup.SourceRegister]
+			if !ok {
+				return OutcomeUnknown, act
+			}
+			hit, ok := lookupMatch(reg, e.Lookup, sets)
+			if !ok {
+				return OutcomeUnknown, act
+			}
+			if !hit {
+				return OutcomeNoMatch, act
+			}
 
 		case facts.ExprCmp:
 			data, err := hex.DecodeString(e.Cmp.Data)
@@ -266,6 +280,90 @@ func ctBytes(pkt *Packet, key string) ([]byte, bool) {
 	b := make([]byte, 4)
 	binary.NativeEndian.PutUint32(b, ctStateNewBit)
 	return b, true
+}
+
+// lookupMatch resolves a Lookup as a flat membership test: does reg, the
+// current value of the register the Lookup reads, equal one of the named
+// set's element keys, byte for byte, honouring inversion. The second return
+// reports whether it could be resolved at all.
+//
+// This is deliberately narrow, matching the posture of xtExpr's recent and
+// addrtype cases: enumerate exactly what is understood and refuse
+// everything else, rather than guess. Refused outright: a set this document
+// does not carry at all (deleted mid-read, or its elements failed to read,
+// see internal/collect/ruleset.go); an interval (range) set; a map or
+// verdict map, whose elements carry a value the caller would need to act on
+// rather than a plain membership answer; a concatenated key type; a set
+// whose elements are not all the same length (not a flat set of comparable
+// keys); an element whose key does not decode as hex; a register shorter
+// than the set's key width, the same conservative call ExprCmp already
+// makes for an undersized register; and, deliberately, a set with no
+// elements at all, even though a truly empty set would answer every
+// membership test the same way (never a member): nothing in decision
+// 0004's census exercised one, and trusting an empty read as genuinely
+// empty rather than as a symptom of some partial enumeration failure is not
+// a call this evaluator has evidence to make. A wrongly resolved set
+// lookup is a false verdict about a firewall, the worst thing this tool
+// can produce, so every one of these yields "cannot resolve" rather than a
+// guessed no-match.
+func lookupMatch(reg []byte, lk *facts.LookupExpr, sets []facts.Set) (hit bool, ok bool) {
+	s, found := findSet(lk, sets)
+	if !found || s.Interval || s.IsMap || s.Concatenation || len(s.Elements) == 0 {
+		return false, false
+	}
+
+	keys := make([][]byte, 0, len(s.Elements))
+	keyLen := -1
+	for _, e := range s.Elements {
+		if e.Val != "" || e.KeyEnd != "" {
+			// A map or interval element that slipped past the set-level
+			// flags above; refuse defensively rather than trust the flags
+			// alone.
+			return false, false
+		}
+		key, err := hex.DecodeString(e.Key)
+		if err != nil {
+			return false, false
+		}
+		if keyLen == -1 {
+			keyLen = len(key)
+		} else if len(key) != keyLen {
+			return false, false // not a flat set of equal-length keys
+		}
+		keys = append(keys, key)
+	}
+	if len(reg) < keyLen {
+		return false, false
+	}
+
+	member := false
+	for _, key := range keys {
+		if bytes.Equal(reg[:keyLen], key) {
+			member = true
+			break
+		}
+	}
+	if lk.Invert {
+		member = !member
+	}
+	return member, true
+}
+
+// findSet resolves a Lookup's set reference against the sets read for its
+// table. A named set (docs/decisions/0004's census: "@myset" in nft syntax)
+// is matched by name; an anonymous set (an inline "{ ... }") carries no
+// usable name of its own, so it is matched by ID instead, the same
+// correlation facts.Set.ID's doc comment describes.
+func findSet(lk *facts.LookupExpr, sets []facts.Set) (facts.Set, bool) {
+	for _, s := range sets {
+		if lk.Set != "" && s.Name == lk.Set {
+			return s, true
+		}
+		if lk.Set == "" && lk.SetID != 0 && s.ID == lk.SetID {
+			return s, true
+		}
+	}
+	return facts.Set{}, false
 }
 
 // xtExpr resolves an iptables-nft compatibility expression. The third return

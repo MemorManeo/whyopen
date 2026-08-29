@@ -19,6 +19,10 @@ func TestFactsRoundTrip(t *testing.T) {
 		Sockets: []Socket{{Family: "ip6", Proto: "tcp", BindIP: "::", Port: 8081, Inode: 12345}},
 		Ruleset: Ruleset{Tables: []Table{{
 			Family: "ip", Name: "nat",
+			Sets: []Set{{
+				Name: "zone_public_ports", ID: 3,
+				Elements: []SetElement{{Key: "0016"}, {Key: "1f90"}},
+			}},
 			Chains: []Chain{{
 				Name: "PREROUTING", Base: true, Hook: "prerouting", Priority: -100, Policy: "accept",
 				Rules: []Rule{{Handle: 20, Exprs: []Expr{
@@ -26,6 +30,7 @@ func TestFactsRoundTrip(t *testing.T) {
 					{Kind: ExprCmp, Cmp: &CmpExpr{Op: "eq", Register: 1, Data: "7f000001"}},
 					{Kind: ExprXt, Xt: &XtExpr{Kind: "target", Name: "DNAT", Rev: 2, Decoded: true,
 						DNAT: &DNATInfo{MinIP: "172.20.0.2", MaxIP: "172.20.0.2", MinPort: 2222, MaxPort: 2222}}},
+					{Kind: ExprLookup, Lookup: &LookupExpr{SourceRegister: 1, Set: "zone_public_ports"}},
 				}}},
 			}},
 		}}},
@@ -51,6 +56,14 @@ func TestFactsRoundTrip(t *testing.T) {
 	}
 	if out.Host.Interfaces[0].Addresses[0].Scope != "global" {
 		t.Fatalf("address scope lost: %+v", out.Host.Interfaces[0])
+	}
+	sets := out.Ruleset.Tables[0].Sets
+	if len(sets) != 1 || sets[0].Name != "zone_public_ports" || sets[0].ID != 3 || len(sets[0].Elements) != 2 {
+		t.Fatalf("set lost in round trip: %+v", sets)
+	}
+	lk := out.Ruleset.Tables[0].Chains[0].Rules[0].Exprs[3].Lookup
+	if lk == nil || lk.Set != "zone_public_ports" || lk.SourceRegister != 1 {
+		t.Fatalf("lookup expr lost in round trip: %+v", lk)
 	}
 	if out.SchemaVersion != SchemaVersion {
 		t.Fatalf("schema version = %d, want %d", out.SchemaVersion, SchemaVersion)

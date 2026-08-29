@@ -85,6 +85,49 @@ type Table struct {
 	Family string  `json:"family"` // ip | ip6 | inet
 	Name   string  `json:"name"`
 	Chains []Chain `json:"chains"`
+	// Sets holds the sets read alongside this table's chains
+	// (docs/decisions/0005-reading-set-elements.md), needed to resolve a
+	// Lookup expression's set reference. A set whose elements could not be
+	// read is omitted here rather than included half-populated: any Lookup
+	// naming it then correctly finds nothing and resolves unknown, the same
+	// outcome as naming a set that genuinely does not exist.
+	Sets []Set `json:"sets,omitempty"`
+}
+
+// Set is an nftables named or anonymous set, as read by GetSets and
+// GetSetElements. whyopen models only a flat membership test against a set
+// of equal-length keys: Interval, IsMap and Concatenation are carried here
+// precisely so internal/model/match.go can refuse everything else, an
+// interval (range) set, a map or verdict map carrying a value alongside
+// each key, or a concatenated key type, rather than guess at what such a
+// set would mean to a membership test. See LookupExpr's doc comment for how
+// a Lookup expression names one of these.
+type Set struct {
+	Name      string `json:"name"`
+	Anonymous bool   `json:"anonymous"`
+	// ID correlates an anonymous set to the Lookup expressions that
+	// reference it: decision 0004's census found an anonymous set (the
+	// brace-list form of a match, e.g. "ct state { established, related }")
+	// is named by ID, not by name, in the Lookup expression that reads it.
+	// A named set is still matched by Name first; ID is what makes the
+	// anonymous case resolvable at all.
+	ID            uint32       `json:"id"`
+	Interval      bool         `json:"interval,omitempty"`
+	IsMap         bool         `json:"is_map,omitempty"`
+	Concatenation bool         `json:"concatenation,omitempty"`
+	Elements      []SetElement `json:"elements,omitempty"`
+}
+
+// SetElement is one entry of a set. Key, Val and KeyEnd are lowercase hex,
+// the same convention CmpExpr.Data already uses, so a facts document stays
+// readable by eye. Val is populated only for a map or verdict map element;
+// KeyEnd only for an interval element. Both are carried, rather than
+// dropped, so the evaluator can refuse either shape as a second line of
+// defence even if a set's own Interval or IsMap flag were somehow wrong.
+type SetElement struct {
+	Key    string `json:"key"`
+	Val    string `json:"val,omitempty"`
+	KeyEnd string `json:"key_end,omitempty"`
 }
 
 type Chain struct {
@@ -117,6 +160,7 @@ const (
 	ExprMeta    ExprKind = "meta"
 	ExprBitwise ExprKind = "bitwise"
 	ExprCt      ExprKind = "ct"
+	ExprLookup  ExprKind = "lookup"
 	ExprVerdict ExprKind = "verdict"
 	ExprXt      ExprKind = "xt"
 	// ExprOther is recorded for completeness and is treated by the evaluator
@@ -141,6 +185,7 @@ type Expr struct {
 	Meta    *MetaExpr    `json:"meta,omitempty"`
 	Bitwise *BitwiseExpr `json:"bitwise,omitempty"`
 	Ct      *CtExpr      `json:"ct,omitempty"`
+	Lookup  *LookupExpr  `json:"lookup,omitempty"`
 	Verdict *VerdictExpr `json:"verdict,omitempty"`
 	Xt      *XtExpr      `json:"xt,omitempty"`
 	Note    string       `json:"note,omitempty"`
@@ -186,6 +231,24 @@ type BitwiseExpr struct {
 type CtExpr struct {
 	Key      string `json:"key"` // state
 	Register uint32 `json:"register"`
+}
+
+// LookupExpr is a native `lookup` expression: it tests the current value of
+// SourceRegister for membership in the set named by Set (a named set,
+// "@myset" in nft syntax) or, when Set is empty, by SetID (an anonymous set
+// written inline, e.g. "{ 22, 80 }"). Both are carried because decision
+// 0004's census found the kernel names a named set by string and an
+// anonymous one by ID, never a name reliable enough to match on; see
+// facts.Set's ID field. internal/model/match.go resolves this only as a
+// flat membership test against the named facts.Set's elements; see that
+// package and facts.Set's doc comments for what is deliberately out of
+// scope (an interval set, a map, a concatenated key type, or a set this
+// document does not carry at all).
+type LookupExpr struct {
+	SourceRegister uint32 `json:"source_register"`
+	Set            string `json:"set,omitempty"`
+	SetID          uint32 `json:"set_id,omitempty"`
+	Invert         bool   `json:"invert,omitempty"`
 }
 
 // VerdictExpr also carries "reject", which is not an nftables verdict

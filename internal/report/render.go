@@ -27,6 +27,9 @@ func RenderRule(r facts.Rule) string {
 			pendingMask = e.Bitwise.Mask
 		case facts.ExprCt:
 			pending = renderCtKey(e.Ct.Key)
+		case facts.ExprLookup:
+			parts = append(parts, renderLookup(pending, e.Lookup))
+			pending, pendingMask = "", ""
 		case facts.ExprCmp:
 			if pending == "" {
 				continue
@@ -97,6 +100,27 @@ func renderCtKey(key string) string {
 		return "ct state"
 	}
 	return "ct " + key
+}
+
+// renderLookup names the set a Lookup expression tests membership against.
+// field is whatever the preceding Meta/Payload/Ct expression named (e.g.
+// "dport"), the same "pending" field name a Cmp would otherwise consume; a
+// Lookup with nothing preceding it (a hand-built facts document) still
+// renders the set reference on its own. An anonymous set carries no usable
+// name (docs/decisions/0004's census), so it renders by ID instead.
+func renderLookup(field string, lk *facts.LookupExpr) string {
+	name := "@" + lk.Set
+	if lk.Set == "" {
+		name = fmt.Sprintf("anonymous set %d", lk.SetID)
+	}
+	verb := "in"
+	if lk.Invert {
+		verb = "not in"
+	}
+	if field == "" {
+		return fmt.Sprintf("%s %s", verb, name)
+	}
+	return fmt.Sprintf("%s %s %s", field, verb, name)
 }
 
 func opSymbol(op string) string {

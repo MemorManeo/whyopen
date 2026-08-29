@@ -197,20 +197,66 @@ func TestConvertNativeExprs(t *testing.T) {
 
 // C1: an expression with no case in convertExpr must be marked
 // facts.ExprUnknown, not facts.ExprOther. ExprOther is transparent to the
-// evaluator, so funnelling an anonymous set lookup into it made
-// "tcp dport { 22, 80 } accept" resolve as an unconditional accept.
+// evaluator, so funnelling an unhandled expression into it made
+// "tcp dport 1024-2048 accept" (expr.Range, still undecoded per decision
+// 0004) resolve as an unconditional accept. expr.Lookup used to stand in
+// here too, before it grew a decoder in v0.2 (see TestConvertLookup*
+// below); expr.Fib takes its place as a second still-genuinely-unhandled
+// type.
 func TestConvertUnhandledExpressionIsUnknown(t *testing.T) {
 	got := ConvertExprs([]expr.Any{
-		&expr.Lookup{SourceRegister: 1, SetName: "__set0"},
 		&expr.Range{Register: 1},
+		&expr.Fib{Register: 1, ResultOIFNAME: true},
 	})
-	for i, want := range []string{"*expr.Lookup", "*expr.Range"} {
+	for i, want := range []string{"*expr.Range", "*expr.Fib"} {
 		if got[i].Kind != facts.ExprUnknown {
 			t.Fatalf("expr %d kind = %q, want %q", i, got[i].Kind, facts.ExprUnknown)
 		}
 		if got[i].Note != want {
 			t.Fatalf("expr %d note = %q, want the Go type name %q", i, got[i].Note, want)
 		}
+	}
+}
+
+// The named-set form of "tcp dport @zone_public_ports accept"
+// (docs/decisions/0004) decodes unconditionally: nothing about a Lookup
+// expression's own fields marks it as out of scope, only the set it names
+// can (internal/model/match.go, not the collector, makes that judgement).
+func TestConvertLookupNamedSet(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Lookup{SourceRegister: 1, SetName: "zone_public_ports"},
+	})
+	if got[0].Kind != facts.ExprLookup || got[0].Lookup == nil {
+		t.Fatalf("lookup = %+v, want a decoded lookup expression", got[0])
+	}
+	lk := got[0].Lookup
+	if lk.SourceRegister != 1 || lk.Set != "zone_public_ports" || lk.SetID != 0 || lk.Invert {
+		t.Fatalf("lookup = %+v, want register 1, set zone_public_ports, no ID, not inverted", lk)
+	}
+}
+
+// The anonymous-set form (the brace-list "ct state { established, related }
+// accept", and "tcp dport { 22, 80 } accept") carries a SetID and no usable
+// SetName (decision 0004's census), so the collector must preserve the ID
+// rather than lose the reference.
+func TestConvertLookupAnonymousSet(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Lookup{SourceRegister: 1, SetID: 7},
+	})
+	lk := got[0].Lookup
+	if lk == nil || lk.Set != "" || lk.SetID != 7 {
+		t.Fatalf("lookup = %+v, want no set name and SetID 7", lk)
+	}
+}
+
+// Invert ("tcp dport != @zone_public_ports") must survive decoding, since
+// it flips the membership test in internal/model/match.go.
+func TestConvertLookupInvert(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Lookup{SourceRegister: 1, SetName: "zone_public_ports", Invert: true},
+	})
+	if got[0].Lookup == nil || !got[0].Lookup.Invert {
+		t.Fatalf("lookup = %+v, want Invert true", got[0].Lookup)
 	}
 }
 

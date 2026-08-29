@@ -128,6 +128,21 @@ func (w *walker) findChain(table, name string) (facts.Chain, bool) {
 	return facts.Chain{}, false
 }
 
+// tableSets returns the named table's sets, so a rule's Lookup expression
+// has something to resolve against (docs/decisions/0005). A jump or goto
+// never crosses a table boundary, so the table name that reached walkChain
+// is always the right one to resolve against, whichever chain within it is
+// currently being walked.
+func (w *walker) tableSets(table string) []facts.Set {
+	for _, t := range w.rs.Tables {
+		if t.Name != table || (t.Family != w.family && t.Family != "inet") {
+			continue
+		}
+		return t.Sets
+	}
+	return nil
+}
+
 // basePolicyResult resolves what a base chain does once nothing earlier has
 // already decided the verdict. In real nftables this is what happens when a
 // chain's rules run out (natural fallthrough), when a rule inside it issues
@@ -169,8 +184,9 @@ func (w *walker) walkChain(table string, ch facts.Chain, depth int) Result {
 		return Result{Kind: "unknown", Reason: "chain nesting exceeded " + itoa(maxJumpDepth) + ", the ruleset may contain a jump loop"}
 	}
 
+	sets := w.tableSets(table)
 	for _, r := range ch.Rules {
-		out, act := MatchRule(w.pkt, r)
+		out, act := MatchRule(w.pkt, r, sets)
 		if out == OutcomeNoMatch {
 			continue
 		}

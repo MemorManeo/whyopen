@@ -59,13 +59,18 @@ func TestFamilyName(t *testing.T) {
 
 // fakeNFT is a rulesetSource that answers from fixtures and counts calls, so
 // a partial failure and the per-family memoization can both be exercised
-// without netlink.
+// without netlink. sets and setsErr are keyed by table name; elements and
+// elementsErr by "table/set".
 type fakeNFT struct {
-	tables     []*nftables.Table
-	chains     map[nftables.TableFamily][]*nftables.Chain
-	chainsErr  map[nftables.TableFamily]error
-	rulesErr   map[string]error
-	chainCalls int
+	tables      []*nftables.Table
+	chains      map[nftables.TableFamily][]*nftables.Chain
+	chainsErr   map[nftables.TableFamily]error
+	rulesErr    map[string]error
+	chainCalls  int
+	sets        map[string][]*nftables.Set
+	setsErr     map[string]error
+	elements    map[string][]nftables.SetElement
+	elementsErr map[string]error
 }
 
 func (f *fakeNFT) ListTables() ([]*nftables.Table, error) { return f.tables, nil }
@@ -83,6 +88,21 @@ func (f *fakeNFT) GetRules(t *nftables.Table, c *nftables.Chain) ([]*nftables.Ru
 		return nil, err
 	}
 	return []*nftables.Rule{{Handle: 1}}, nil
+}
+
+func (f *fakeNFT) GetSets(t *nftables.Table) ([]*nftables.Set, error) {
+	if err, ok := f.setsErr[t.Name]; ok {
+		return nil, err
+	}
+	return f.sets[t.Name], nil
+}
+
+func (f *fakeNFT) GetSetElements(s *nftables.Set) ([]nftables.SetElement, error) {
+	key := s.Table.Name + "/" + s.Name
+	if err, ok := f.elementsErr[key]; ok {
+		return nil, err
+	}
+	return f.elements[key], nil
 }
 
 func twoTableFixture() *fakeNFT {
@@ -166,6 +186,98 @@ func TestReadRulesetListsChainsOncePerFamily(t *testing.T) {
 	}
 	if f.chainCalls != 1 {
 		t.Fatalf("ListChainsOfTableFamily called %d times for 2 tables in one family, want 1", f.chainCalls)
+	}
+}
+
+// A table's sets, and each set's elements, are read alongside its chains
+// (docs/decisions/0005) and carried into facts.Table.Sets, so a Lookup
+// expression in one of that table's rules has something to resolve against.
+func TestReadRulesetCarriesSetsAndElements(t *testing.T) {
+	f := twoTableFixture()
+	filter := f.tables[0]
+	f.sets = map[string][]*nftables.Set{
+		"filter": {{Table: filter, Name: "zone_public_ports", ID: 3}},
+	}
+	f.elements = map[string][]nftables.SetElement{
+		"filter/zone_public_ports": {{Key: []byte{0, 22}}, {Key: []byte{0x1f, 0x90}}},
+	}
+
+	rs, warns, err := readRuleset(f)
+	if err != nil {
+		t.Fatalf("readRuleset: %v", err)
+	}
+	if len(warns) != 0 {
+		t.Fatalf("warnings on a complete read: %+v", warns)
+	}
+	if rs.ReadFailed {
+		t.Fatalf("ReadFailed set on a complete read")
+	}
+	sets := rs.Tables[0].Sets
+	if len(sets) != 1 || sets[0].Name != "zone_public_ports" || sets[0].ID != 3 {
+		t.Fatalf("sets = %+v, want one set named zone_public_ports with ID 3", sets)
+	}
+	if len(sets[0].Elements) != 2 || sets[0].Elements[0].Key != "0016" || sets[0].Elements[1].Key != "1f90" {
+		t.Fatalf("elements = %+v, want hex-encoded 22 and 8080", sets[0].Elements)
+	}
+}
+
+// A GetSets failure is a facts.Warning and marks the read incomplete, the
+// same posture as a ListChainsOfTableFamily failure, but it does not stop
+// this table's chains and rules from still being read: a set-list failure
+// says nothing about whether the chains underneath can be read too.
+func TestReadRulesetSetsFailureMarksIncompleteButChainsStillRead(t *testing.T) {
+	f := twoTableFixture()
+	f.setsErr = map[string]error{"filter": errors.New("permission denied")}
+
+	rs, warns, err := readRuleset(f)
+	if err != nil {
+		t.Fatalf("readRuleset returned a hard error on a partial failure: %v", err)
+	}
+	if !rs.ReadFailed {
+		t.Fatalf("ReadFailed must be set when a table's sets could not be listed")
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0].Message, "filter") {
+		t.Fatalf("warnings = %+v, want one naming the table", warns)
+	}
+	if len(rs.Tables[0].Sets) != 0 {
+		t.Fatalf("Sets = %+v, want none when the list call failed", rs.Tables[0].Sets)
+	}
+	if len(rs.Tables[0].Chains) != 2 {
+		t.Fatalf("chains = %+v, still expected to be read despite the sets failure", rs.Tables[0].Chains)
+	}
+}
+
+// A GetSetElements failure for one set is a facts.Warning and marks the read
+// incomplete, but only that set is omitted: a sibling set that read
+// successfully is still carried, the same granularity a single unreadable
+// chain's rules do not cost the rest of the table.
+func TestReadRulesetSetElementsFailureOmitsOnlyThatSet(t *testing.T) {
+	f := twoTableFixture()
+	filter := f.tables[0]
+	f.sets = map[string][]*nftables.Set{
+		"filter": {
+			{Table: filter, Name: "broken", ID: 1},
+			{Table: filter, Name: "ok", ID: 2},
+		},
+	}
+	f.elementsErr = map[string]error{"filter/broken": errors.New("no such file or directory")}
+	f.elements = map[string][]nftables.SetElement{
+		"filter/ok": {{Key: []byte{6}}},
+	}
+
+	rs, warns, err := readRuleset(f)
+	if err != nil {
+		t.Fatalf("readRuleset returned a hard error on a partial failure: %v", err)
+	}
+	if !rs.ReadFailed {
+		t.Fatalf("ReadFailed must be set when a set's elements could not be read")
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0].Message, "broken") {
+		t.Fatalf("warnings = %+v, want one naming the unreadable set", warns)
+	}
+	sets := rs.Tables[0].Sets
+	if len(sets) != 1 || sets[0].Name != "ok" {
+		t.Fatalf("sets = %+v, want only the set that read successfully", sets)
 	}
 }
 

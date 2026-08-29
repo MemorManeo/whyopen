@@ -395,3 +395,62 @@ table inet filter {
 			"\"tcp dport 22 accept\" to decide", v.Result, v.Reason)
 	}
 }
+
+// The last construct closing the firewalld gap: expr.Lookup, decoded in
+// v0.2. This ruleset exercises all three shapes docs/decisions/0004's
+// census found it in, in a single chain: the anonymous-set form
+// ("tcp dport { 22, 80 } accept"), the named-set form
+// ("tcp dport @allowed_admin accept"), and the brace-list ct state idiom
+// ("ct state { established, related } accept", which compiles to Ct plus
+// Lookup rather than the comma-list's Ct/Bitwise/Cmp).
+//
+// Any one of the three failing to decode would poison the whole chain to
+// unknown, not just its own rule: an unresolved expression anywhere in a
+// rule makes that rule's outcome unknown, and the ct-state rule runs first,
+// ahead of both set-membership rules. A clean reachable/filtered split
+// across all four ports, none of them unknown, is therefore proof that all
+// three resolve, not only whichever happens to run last.
+func TestNativeSetLookupsResolveReachableAndFiltered(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	for _, port := range []string{"22", "80", "8443", "9999"} {
+		listenIn(t, ns, "0.0.0.0", port)
+	}
+
+	applyNftRuleset(t, ns, `
+table inet filter {
+	set allowed_admin {
+		type inet_service
+		elements = { 8443 }
+	}
+	chain input {
+		type filter hook input priority 0; policy drop;
+		ct state { established, related } accept
+		tcp dport { 22, 80 } accept
+		tcp dport @allowed_admin accept
+	}
+}
+`)
+
+	f := collectIn(t, ns)
+	verdicts := evaluate(f)
+	for _, tc := range []struct {
+		port uint16
+		want string
+	}{
+		{22, "reachable"},   // anonymous set member
+		{80, "reachable"},   // anonymous set member
+		{8443, "reachable"}, // named set member
+		{9999, "filtered"},  // in neither set, falls through to the drop policy
+	} {
+		v := verdictFor(verdicts, tc.port, "ip")
+		if v == nil {
+			t.Fatalf("no verdict for port %d", tc.port)
+		}
+		if v.Result != tc.want {
+			t.Errorf("port %d = %s (%s), want %s", tc.port, v.Result, v.Reason, tc.want)
+		}
+	}
+}

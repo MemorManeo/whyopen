@@ -143,6 +143,8 @@ func convertExpr(e expr.Any) facts.Expr {
 		}}
 	case *expr.Ct:
 		return convertCt(v)
+	case *expr.Lookup:
+		return convertLookup(v)
 	case *expr.Verdict:
 		return facts.Expr{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{
 			Kind: verdictKindName(v.Kind), Chain: v.Chain,
@@ -193,6 +195,22 @@ func convertCt(v *expr.Ct) facts.Expr {
 	return facts.Expr{Kind: facts.ExprCt, Ct: &facts.CtExpr{
 		Key:      "state",
 		Register: v.Register,
+	}}
+}
+
+// convertLookup decodes a native `lookup` expression unconditionally: unlike
+// convertCt, nothing about a Lookup expression's own fields marks a shape as
+// out of scope. Whether it can be resolved depends on the set it names,
+// which is not visible here (the collector converts one rule at a time),
+// so that judgement, an interval set, a map, a concatenated key type, or a
+// set this document does not carry at all, belongs entirely to
+// internal/model/match.go, which has the full facts.Ruleset to consult.
+func convertLookup(v *expr.Lookup) facts.Expr {
+	return facts.Expr{Kind: facts.ExprLookup, Lookup: &facts.LookupExpr{
+		SourceRegister: v.SourceRegister,
+		Set:            v.SetName,
+		SetID:          v.SetID,
+		Invert:         v.Invert,
 	}}
 }
 
