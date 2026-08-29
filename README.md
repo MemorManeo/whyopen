@@ -129,6 +129,17 @@ Docker container's name and published ports. Treat it like you would a
 `nft list ruleset` dump or a `netstat` output: **redact it before attaching
 it to a bug report** or pasting it anywhere outside your own infrastructure.
 
+## Tests
+
+`go test ./...` runs the unit suite and needs no privileges.
+
+There is a second, root-requiring tier under `test/integration/`, behind
+the `integration` build tag, which exercises whyopen against a real kernel
+in throwaway network namespaces and, in one test, against a real Docker
+daemon. It mutates the host it runs on. Read
+[test/integration/README.md](test/integration/README.md) before running
+it.
+
 ## Design
 
 Design: docs/superpowers/specs/2026-08-28-whyopen-design.md
