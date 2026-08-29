@@ -130,16 +130,22 @@ func captureXtPayloads(t *testing.T, ns string, name string) []xtPayload {
 //
 // It also enforces decision 0004's two specific claims by name, named
 // individually rather than merely counted: a stray count would stay green
-// as long as any two shapes were undecoded, letting 0004 go stale in
-// silence. Set membership (*expr.Lookup, produced here by the interface
-// set, the port set and the "meta l4proto { tcp, udp }" match independently
-// of one another) has no decoder yet and must still be among the
-// expressions whyopen reports as unknown. Native ct state (*expr.Ct) was
-// decoded in v0.2 for the comma-list shape ("ct state established,related
-// accept"), so every occurrence of it, including the one that precedes the
-// still-undecoded Lookup in the brace-list rule ("ct state { established,
-// related } accept"), must now be among the expressions whyopen decodes
-// instead.
+// as long as some other shape happened to be undecoded, letting a
+// regression in either decoder go unnoticed. Native ct state (*expr.Ct)
+// was decoded for the comma-list shape ("ct state established,related
+// accept"). Set membership (*expr.Lookup, produced here by the interface
+// set, the port set, the "meta l4proto { tcp, udp }" match and the
+// anonymous ct-state set the brace-list rule compiles to) was decoded too
+// (both in v0.2, this record's original scope), which is what let the
+// brace-list shape ("ct state { established, related } accept") resolve at
+// all: it depends on both decoders, since it compiles to Ct followed by
+// Lookup rather than the comma-list's Ct/Bitwise/Cmp. With both native
+// types this ruleset exercises now decoded, every expression it produces
+// is expected to be known; this guard used to double as a staleness check
+// for that (failing if nothing at all was left unknown, since that would
+// mean this synthetic ruleset no longer exercised what it was written to),
+// but with nothing left undecoded here by design, it now checks only that
+// Ct and Lookup specifically have not regressed back to unknown.
 func TestCaptureFirewalldExpressions(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "nft")
@@ -203,29 +209,31 @@ table inet whyopen_fw {
 	logExprCounts(t, "decoded", census.known)
 	logExprCounts(t, "unknown", census.unknown)
 
-	if len(census.unknown) == 0 {
-		t.Fatalf("expected at least one expression whyopen currently reports as unknown, found none: either this shape no longer reaches the kernel as written, or whyopen has grown a decoder for everything this ruleset produces and this record is stale")
+	// Ct and Lookup are decision 0004's two named native types (both
+	// decoded in v0.2), asserted individually and in both directions so
+	// that either one regressing back to unknown fails this test rather
+	// than being masked by the other still being decoded.
+	for _, want := range []string{
+		fmt.Sprintf("%T", &expr.Ct{}),
+		fmt.Sprintf("%T", &expr.Lookup{}),
+	} {
+		if census.known[want] == 0 {
+			t.Fatalf("expected %s among the expressions whyopen decodes, found none: its decoder may have regressed. Known census: %v", want, census.known)
+		}
+		if census.unknown[want] != 0 {
+			t.Fatalf("expected %s to no longer be reported unknown, but it still was. Unknown census: %v", want, census.unknown)
+		}
 	}
-	// Lookup still has no decoder (docs/decisions/0004), so it must remain
-	// among the expressions whyopen reports as unknown. Asserted on its own
-	// so decoding it later fails this test rather than being masked by some
-	// other shape that happens to still be undecoded.
-	wantUnknown := fmt.Sprintf("%T", &expr.Lookup{})
-	if census.unknown[wantUnknown] == 0 {
-		t.Fatalf("expected %s among the expressions whyopen reports as unknown, found none: decision 0004's claims no longer hold and docs/decisions/0004-firewalld-expressions.md needs revisiting. Unknown census: %v", wantUnknown, census.unknown)
-	}
-	// Ct was decoded in v0.2 (docs/decisions/0004's comma-list "ct state"
-	// shape, e.g. "ct state established,related accept"): every occurrence
-	// here, including the one that precedes the still-undecoded Lookup in
-	// the brace-list rule, must now be in the decoded set and gone from the
-	// unknown one. This turns what was a staleness guard for an undecoded
-	// Ct into a regression guard for the decoder that replaced it.
-	wantDecoded := fmt.Sprintf("%T", &expr.Ct{})
-	if census.known[wantDecoded] == 0 {
-		t.Fatalf("expected %s among the expressions whyopen decodes, found none: the v0.2 ct state decoder may have regressed. Known census: %v", wantDecoded, census.known)
-	}
-	if census.unknown[wantDecoded] != 0 {
-		t.Fatalf("expected %s to no longer be reported unknown now that the v0.2 ct state decoder exists, but it still was. Unknown census: %v", wantDecoded, census.unknown)
+	// With both decoded, this specific ruleset is expected to produce no
+	// unknown expressions at all (see decision 0004's "Update (v0.2,
+	// continued): Lookup" section): every construct it was written to
+	// exercise now has a case.
+	// A nonempty census here means some OTHER expression in this ruleset
+	// stopped decoding, or the nftables library started emitting a shape
+	// this test was not written to expect; either way it needs a look, not
+	// a silent pass.
+	if len(census.unknown) != 0 {
+		t.Fatalf("expected no unknown expressions left for this ruleset now that Ct and Lookup both decode, got: %v", census.unknown)
 	}
 }
 

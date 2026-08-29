@@ -49,7 +49,7 @@ What is left of it: only the three captured `check_set` bit patterns decode.
 and closing that needs a fresh capture rather than an inference from the
 pattern the other three follow.
 
-## 4. Native nftables expression decoding (`Ct` landed in v0.2)
+## 4. Native nftables expression decoding (`Ct` and `Lookup` landed in v0.2)
 
 Captured, not speculative: `docs/decisions/0004-firewalld-expressions.md`
 applied a firewalld-shaped ruleset in a namespace and recorded what
@@ -71,11 +71,27 @@ proven against a real kernel by `TestNativeCtStateAcceptResolvesReachable`.
 See `docs/decisions/0004-firewalld-expressions.md`'s own "Update (v0.2)"
 section for detail.
 
-What is left: `expr.Lookup` is still undecoded, so the brace-list shape
-(`ct state { established, related } accept`) still reports `unknown`, and
-so does every other rule that depends on a named or anonymous set: a port
-set, an interface set, a `meta l4proto { tcp, udp }` match. Decoding
-`Lookup`, and reading set elements to support it, is still queued.
+What landed next, completing v0.2's scope for this entry: `expr.Lookup`,
+decoded unconditionally in `internal/collect/nftconv.go` (`convertLookup`);
+whether it resolves depends on the set it names, which
+`internal/model/match.go`'s `lookupMatch` decides, as a flat membership
+test only, refusing an interval set, a map or verdict map, a concatenated
+key type, or a set the document does not carry. Reading a set's elements
+at all needed two more read-only methods, `GetSets` and `GetSetElements`,
+recorded in `docs/decisions/0005-reading-set-elements.md`. This closes the
+brace-list `ct state` shape too, since it depends on both decoders (`Ct`
+then `Lookup`, no `Bitwise`/`Cmp`), proven together against a real kernel
+by `TestNativeSetLookupsResolveReachableAndFiltered`. See
+`docs/decisions/0004-firewalld-expressions.md`'s own "Update (v0.2,
+continued): `Lookup`" section for detail.
+
+What is left: `expr.Range` is still undecoded, deferred since decision
+0004's capture found no evidence it is needed; a numeric range or an
+interval-flagged set still reports `unknown`. A set whose elements
+whyopen cannot interpret as a flat list, a map, a vmap, or a concatenated
+key type, are all deliberate refusals rather than gaps: closing any of
+those needs a captured ruleset that actually exercises the shape, the same
+evidence-first posture every decoder in this project has followed.
 
 ## 5. Probe and reconcile
 

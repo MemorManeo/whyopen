@@ -262,6 +262,55 @@ was updated to hold this line precisely: `*expr.Ct` moved from the unknown
 side of the census to the decoded side, `*expr.Lookup` did not move, and
 the test fails again the day either fact stops being true.
 
-The census and decision above are left exactly as captured. Their value is
-in being an honest record of what the capture found and what was decided
-from it at the time, not in being edited to match what shipped later.
+## Update (v0.2, continued): `Lookup`
+
+`Lookup` was decoded, closing the last gap this record named and completing
+what the update above left open (both were always scoped to v0.2; no v0.3
+work is implied by this section's numbering). It decodes
+unconditionally (`convertLookup` in `internal/collect/nftconv.go`): nothing
+about a `Lookup` expression's own fields marks it out of scope, only the
+set it names can, and that set is not visible to the collector converting
+one expression at a time. That judgement belongs entirely to
+`internal/model/match.go`'s `lookupMatch`, which resolves a `Lookup` only
+as a flat membership test against a set of equal-length keys, and refuses
+everything else: an interval (range) set, a map or verdict map carrying a
+value alongside each key, a concatenated key type, a set this document does
+not carry at all, or a register narrower than the set's key width. Reading
+a set's elements at all needed a fifth and sixth read-only method,
+`GetSets` and `GetSetElements`, recorded separately in
+`docs/decisions/0005-reading-set-elements.md` rather than assumed.
+
+Decision 0004's own census found the kernel names a named set by string but
+an anonymous one only by ID, never by a name reliable enough to match on
+(`facts.Set.ID`, `facts.LookupExpr.SetID`); both are carried so the
+anonymous case is resolvable at all, not just the named one.
+
+This closes the dependency the "`ct state` compiles two different ways, not
+one" section described: the brace-list shape, `ct state { established,
+related } accept`, now decodes and resolves. It compiles to `Ct` then
+`Lookup` against an anonymous set of the two ct-state flag values, no
+`Bitwise` or `Cmp` involved, exactly as this record found back when neither
+half decoded. `TestNativeSetLookupsResolveReachableAndFiltered`
+(`test/integration/ruleset_test.go`) proves the anonymous-set form
+(`tcp dport { 22, 80 } accept`), the named-set form
+(`tcp dport @allowed_admin accept`) and the brace-list `ct state` idiom all
+resolve against a real kernel, in one ruleset, deliberately run together so
+that any one of the three failing to decode would poison the whole chain to
+`unknown` rather than being masked by the other two.
+
+`TestCaptureFirewalldExpressions` was updated again: `*expr.Lookup` moved
+from the unknown side of the census to the decoded side alongside
+`*expr.Ct`, and the test now also asserts nothing at all remains unknown
+for this ruleset, since both native types it was written to exercise are
+now decoded and decision 0004's own census accounted for every expression
+this ruleset produces. The test fails again the day either type regresses
+back to unknown, or some other expression in it stops decoding.
+
+`Range` remains out of scope, unchanged from the original decision: no
+capture has yet shown it in use.
+
+The census and original decision above are left exactly as captured. Their
+value is in being an honest record of what the capture found and what was
+decided from it at the time, not in being edited to match what shipped
+later; the two "Update" sections record what actually shipped against
+that original record instead.
