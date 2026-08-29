@@ -582,6 +582,23 @@ func TestLookupNamedSetMembership(t *testing.T) {
 	}
 }
 
+// IsDestRegSet is the expression's own statement that this is a map lookup
+// writing a value, not a plain membership test, and it must be refused
+// independently of the named set's own IsMap flag: this set is flat,
+// present, and would otherwise match (same set and port as
+// TestLookupNamedSetMembership), so a wrongly-shared guard that only
+// checked facts.Set.IsMap would let this resolve to a match. It must not.
+func TestLookupRefusalIsDestRegSet(t *testing.T) {
+	sets := []facts.Set{portSet("zone_public_ports", 3, 22, 8080)}
+	rule := dportLookupRule(facts.LookupExpr{SourceRegister: 1, Set: "zone_public_ports", IsDestRegSet: true})
+
+	p := testPacket()
+	p.DstPort = 22
+	if out, _ := MatchRule(p, rule, sets); out != OutcomeUnknown {
+		t.Fatalf("out=%v, want unknown: IsDestRegSet marks this a map lookup, not a membership test, even though the named set would otherwise match", out)
+	}
+}
+
 // The same set and rule, a port that is not a member.
 func TestLookupNamedSetNonMembership(t *testing.T) {
 	sets := []facts.Set{portSet("zone_public_ports", 3, 22, 8080)}

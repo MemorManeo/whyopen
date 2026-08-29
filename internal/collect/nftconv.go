@@ -198,19 +198,24 @@ func convertCt(v *expr.Ct) facts.Expr {
 	}}
 }
 
-// convertLookup decodes a native `lookup` expression unconditionally: unlike
-// convertCt, nothing about a Lookup expression's own fields marks a shape as
-// out of scope. Whether it can be resolved depends on the set it names,
-// which is not visible here (the collector converts one rule at a time),
-// so that judgement, an interval set, a map, a concatenated key type, or a
-// set this document does not carry at all, belongs entirely to
-// internal/model/match.go, which has the full facts.Ruleset to consult.
+// convertLookup decodes a native `lookup` expression unconditionally: it
+// carries IsDestRegSet through faithfully, but does not itself refuse a
+// map-style lookup on it. Whether a plain membership lookup can be resolved
+// depends on the set it names, which is not visible here (the collector
+// converts one rule at a time), so that judgement, an interval set, a map,
+// a concatenated key type, or a set this document does not carry at all,
+// belongs entirely to internal/model/match.go, which has the full
+// facts.Ruleset to consult. IsDestRegSet is one of the two independent
+// signals that evaluator checks for a map lookup, alongside the named
+// set's own IsMap flag; see facts.LookupExpr's doc comment for why both
+// exist.
 func convertLookup(v *expr.Lookup) facts.Expr {
 	return facts.Expr{Kind: facts.ExprLookup, Lookup: &facts.LookupExpr{
 		SourceRegister: v.SourceRegister,
 		Set:            v.SetName,
 		SetID:          v.SetID,
 		Invert:         v.Invert,
+		IsDestRegSet:   v.IsDestRegSet,
 	}}
 }
 

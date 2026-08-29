@@ -260,6 +260,21 @@ func TestConvertLookupInvert(t *testing.T) {
 	}
 }
 
+// IsDestRegSet is the expression's own statement that this is a map lookup
+// writing a value into a destination register, not a plain membership
+// test. The collector still decodes it (only internal/model/match.go
+// refuses on it), but must preserve the flag faithfully: it is one of two
+// independent signals that guard against resolving a map as a membership
+// test.
+func TestConvertLookupDestRegSet(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Lookup{SourceRegister: 1, SetName: "zone_public_ports", IsDestRegSet: true, DestRegister: 1},
+	})
+	if got[0].Lookup == nil || !got[0].Lookup.IsDestRegSet {
+		t.Fatalf("lookup = %+v, want IsDestRegSet true", got[0].Lookup)
+	}
+}
+
 // C1: a native nft reject carries no expr.Verdict, so it used to land in the
 // silently dropped set. It is terminal, which makes it the most dangerous
 // possible member of that set.

@@ -244,11 +244,20 @@ type CtExpr struct {
 // package and facts.Set's doc comments for what is deliberately out of
 // scope (an interval set, a map, a concatenated key type, or a set this
 // document does not carry at all).
+//
+// IsDestRegSet is the expression's own statement that this is a map lookup
+// writing a value into a destination register, not a plain membership
+// test, independently of facts.Set.IsMap: one signal comes from the
+// expression, the other from the set it names, and either can be wrong on
+// its own (a wrong or missing correlation, a set whose flags were not read
+// correctly), so both are checked. The destination register itself is not
+// carried: whyopen never resolves a map lookup, so nothing reads it.
 type LookupExpr struct {
 	SourceRegister uint32 `json:"source_register"`
 	Set            string `json:"set,omitempty"`
 	SetID          uint32 `json:"set_id,omitempty"`
 	Invert         bool   `json:"invert,omitempty"`
+	IsDestRegSet   bool   `json:"is_dest_reg_set,omitempty"`
 }
 
 // VerdictExpr also carries "reject", which is not an nftables verdict

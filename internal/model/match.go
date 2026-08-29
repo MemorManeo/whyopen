@@ -58,6 +58,16 @@ func MatchRule(pkt *Packet, r facts.Rule, sets []facts.Set) (Outcome, Action) {
 			regs[e.Ct.Register] = b
 
 		case facts.ExprLookup:
+			if e.Lookup.IsDestRegSet {
+				// The expression's own statement that this is a map lookup
+				// writing a value, not a plain membership test. Checked
+				// before the set is even looked up, independently of
+				// facts.Set.IsMap: either signal alone must be enough to
+				// refuse, since a wrong or missing correlation, or a set
+				// whose flags were not read correctly, must not silently
+				// fall through to the other guard.
+				return OutcomeUnknown, act
+			}
 			reg, ok := regs[e.Lookup.SourceRegister]
 			if !ok {
 				return OutcomeUnknown, act
@@ -285,7 +295,12 @@ func ctBytes(pkt *Packet, key string) ([]byte, bool) {
 // lookupMatch resolves a Lookup as a flat membership test: does reg, the
 // current value of the register the Lookup reads, equal one of the named
 // set's element keys, byte for byte, honouring inversion. The second return
-// reports whether it could be resolved at all.
+// reports whether it could be resolved at all. The caller (MatchRule)
+// refuses e.Lookup.IsDestRegSet before ever calling this function, since a
+// map-style lookup is not a membership test at all; that guard is
+// independent of everything checked here, so a set that happens to look
+// flat and complete cannot mask a lookup that is, by its own expression
+// fields, not a plain membership test.
 //
 // This is deliberately narrow, matching the posture of xtExpr's recent and
 // addrtype cases: enumerate exactly what is understood and refuse
