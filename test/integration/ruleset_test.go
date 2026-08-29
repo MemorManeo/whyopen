@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -84,6 +85,21 @@ func dockerShapedNetns(t *testing.T, forwarding bool) (ns string, bridge string)
 		// filtered for the forwarding-disabled reason instead of the thing
 		// each test actually means to exercise. Do not remove this as dead
 		// weight: it is load-bearing, not noise.
+		//
+		// Whether this write actually lands on the namespace or, under a
+		// procfs subtlety still being diagnosed, leaks to the root
+		// namespace, this suite must never leave the CI runner's global
+		// network configuration different from how it found it. Capture
+		// the root namespace's value directly (no ip netns exec, so this
+		// reads the root namespace regardless of where the write below
+		// lands) and restore it on cleanup either way.
+		before, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
+		if err != nil {
+			t.Fatalf("read root /proc/sys/net/ipv4/ip_forward before enabling namespace forwarding: %v", err)
+		}
+		t.Cleanup(func() {
+			os.WriteFile("/proc/sys/net/ipv4/ip_forward", before, 0o644)
+		})
 		nsRun(t, ns, "sysctl", "-w", "net.ipv4.ip_forward=1")
 	}
 
@@ -214,7 +230,7 @@ func TestPublishOnLoopbackIsFiltered(t *testing.T) {
 // filtered for that reason rather than reachable.
 func TestPublishIsFilteredWhenForwardingIsDisabled(t *testing.T) {
 	requireRoot(t)
-	requireTools(t, "ip", "iptables", "python3")
+	requireTools(t, "ip", "iptables", "python3", "sysctl")
 
 	ns, bridge := dockerShapedNetns(t, false)
 	listenIn(t, ns, "0.0.0.0", "5432")
@@ -222,7 +238,28 @@ func TestPublishIsFilteredWhenForwardingIsDisabled(t *testing.T) {
 	nsRun(t, ns, "iptables", "-P", "FORWARD", "DROP")
 	publishOnAllInterfaces(t, ns, bridge, "5432", "172.20.0.2", "5432")
 
-	v := verdictFor(evaluate(collectIn(t, ns)), 5432, "ip")
+	f := collectIn(t, ns)
+
+	// Diagnostics for the open question of where net.ipv4.ip_forward is
+	// actually being read from and written to. Logged unconditionally, so
+	// they appear whether or not the assertions below pass, per Ruling 13.
+	t.Logf("collected f.Host.Sysctls.IPv4Forward = %v", f.Host.Sysctls.IPv4Forward)
+	for _, w := range f.Warnings {
+		if w.Source == "host" {
+			t.Logf("host warning: %s", w.Message)
+		}
+	}
+	nsCat := nsRun(t, ns, "cat", "/proc/sys/net/ipv4/ip_forward")
+	t.Logf("namespace /proc/sys/net/ipv4/ip_forward (cat via ip netns exec) = %q", strings.TrimSpace(nsCat))
+	nsSysctl := nsRun(t, ns, "sysctl", "-n", "net.ipv4.ip_forward")
+	t.Logf("namespace net.ipv4.ip_forward (sysctl -n via ip netns exec) = %q", strings.TrimSpace(nsSysctl))
+	rootVal, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
+	if err != nil {
+		t.Fatalf("read root /proc/sys/net/ipv4/ip_forward: %v", err)
+	}
+	t.Logf("root namespace /proc/sys/net/ipv4/ip_forward (os.ReadFile, no ip netns exec) = %q", strings.TrimSpace(string(rootVal)))
+
+	v := verdictFor(evaluate(f), 5432, "ip")
 	if v == nil {
 		t.Fatal("no verdict for the published port")
 	}
