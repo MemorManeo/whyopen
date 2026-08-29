@@ -39,11 +39,16 @@ struct offsets against real bytes rather than from memory.
 
 ## 4. Native nftables expression decoding
 
-`expr.Ct`, `expr.Lookup` (anonymous and named sets) and `expr.Range` cover
-most of what a hand-written nft ruleset or a firewalld host emits. Without
-them those hosts report `unknown` widely, which is honest but not useful.
-Note that the nftables library discards expressions it cannot name before
-whyopen sees them, so some cases cannot be fixed here at all.
+Captured, not speculative: `docs/decisions/0004-firewalld-expressions.md`
+applied a firewalld-shaped ruleset in a namespace and recorded what
+`google/nftables` actually returns. Decode `expr.Lookup` first (named and
+anonymous sets; needs the collector to read set elements, which it does not
+today), then `expr.Ct` for `CtKeySTATE`, which arrives as one of two
+different shapes depending on whether the source used a comma list or a
+brace list, both documented there. `expr.Range` is deferred: the capture
+found no evidence it is needed. The nftables library silently discards any
+expression name it has no case for before whyopen ever sees it; 0004's
+"drop question" section records what was and was not tested for that.
 
 ## 5. Probe and reconcile
 
