@@ -19,12 +19,19 @@ filtered   8888/tcp   IPv4    searxng                     127.0.0.1   bound to 1
 ```
 
 That is a real run against an Ubuntu 24.04 host with UFW and Docker, 275
-rules across 89 chains, with service and container names generalised. The
-two `unknown` rows are genuine: UFW's `ufw limit ssh` uses the `xt recent`
-extension, which whyopen does not decode yet, so it declines to guess about
-port 22 rather than reporting it open. That exact snapshot is committed as
-`testdata/facts/ufw-docker-host.json` and the verdicts above are asserted by
-the test suite.
+rules across 89 chains, with service and container names generalised. That
+exact snapshot is committed as `testdata/facts/ufw-docker-host.json` and the
+verdicts above are asserted by the test suite.
+
+The two `unknown` rows on port 22 date the snapshot rather than describe
+whyopen today. It was captured before whyopen decoded the `xt recent`
+extension that `ufw limit ssh` uses, and a facts document preserves what the
+collector understood when it ran, so those two rules still carry no decoded
+payload and whyopen still declines to guess about them. A current run
+against a live UFW host decodes them and resolves port 22, which the
+integration suite asserts against a real kernel. The table above is printed
+exactly as it was collected rather than edited to show what a fresh run
+would produce.
 
 - `RESULT` is `reachable` (a packet from the internet zone reaches this
   socket), `filtered` (some rule or bind address stops it), or `unknown`
@@ -56,8 +63,6 @@ Known gaps that produce `unknown` today:
   Native `ct state`, anonymous set lookups (`tcp dport { 22, 80 }`) and
   ranges are all undecoded today, so on such a host a rule as ordinary as
   `ct state established,related accept` makes every port report `unknown`.
-- `xt recent` is not decoded, so a port UFW rate-limits (`ufw limit 22/tcp`)
-  reports `unknown` rather than a verdict.
 
 One known gap points the other way, reporting `filtered` where the port may
 be open: whyopen reads only the global forwarding toggles
