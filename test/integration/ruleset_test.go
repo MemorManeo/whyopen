@@ -189,6 +189,15 @@ func TestDockerUserDenyOverridesThePublish(t *testing.T) {
 	if v.Result != "filtered" {
 		t.Fatalf("published port = %s, want filtered by DOCKER-USER: %s", v.Result, v.Reason)
 	}
+	var sawDockerUserDrop bool
+	for _, h := range v.Path {
+		if h.Chain == "DOCKER-USER" && h.Action == "drop" {
+			sawDockerUserDrop = true
+		}
+	}
+	if !sawDockerUserDrop {
+		t.Errorf("path never shows a drop in DOCKER-USER: filtered for some other reason, not the deny this test installs: %+v", v.Path)
+	}
 }
 
 // A publish bound to loopback is the remediated shape and must be filtered
@@ -214,6 +223,12 @@ func TestPublishOnLoopbackIsFiltered(t *testing.T) {
 	}
 	if v.Result != "filtered" {
 		t.Fatalf("loopback-bound publish = %s, want filtered: %s", v.Result, v.Reason)
+	}
+	if len(v.Path) != 0 {
+		t.Errorf("path is non-empty (%+v): a bind-address mismatch must be decided before any rule is consulted", v.Path)
+	}
+	if !strings.Contains(v.Reason, "bound to") {
+		t.Errorf("reason does not name the bind: %s", v.Reason)
 	}
 }
 
