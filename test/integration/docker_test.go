@@ -15,6 +15,16 @@ import (
 // running Docker inside a namespace is its own project. It is safe on an
 // ephemeral CI runner and deliberately not something to run on a machine you
 // care about: it publishes a port on all interfaces for the duration.
+//
+// It does not set an INPUT deny policy the way the namespace sibling
+// (TestPublishOnAllInterfacesIsReachableDespiteInputDeny) does, on purpose.
+// This test runs in the runner's root namespace, not an isolated one; an
+// INPUT drop policy there with no established-accept rule would also cut the
+// Actions agent's own return traffic and hang or fail the job in a way that
+// looks unrelated to this test. The "reachable despite an input-chain deny"
+// half of the claim is already proven safely by that sibling; this test's
+// job is only to prove the same forward-hook mechanism holds against rules
+// Docker itself wrote, not to re-prove the deny half here too.
 func TestRealDockerPublishIsReported(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "docker")
@@ -27,11 +37,20 @@ func TestRealDockerPublishIsReported(t *testing.T) {
 	run(t, "ip", "addr", "add", "203.0.113.10/32", "dev", "whyopen0")
 	run(t, "ip", "link", "set", "whyopen0", "up")
 
+	// Cleanup is registered before the container is created, not after,
+	// because "docker run -d" can create the container and then fail to
+	// start it (a collision on port 18080 from a stale prior run is the
+	// realistic case), and run() calls t.Fatalf, which runs t.Cleanup but
+	// never returns to this function. Without the early registration that
+	// path would leave a container behind, still publishing a port. "docker
+	// rm -f" against a container that does not exist is harmless, which is
+	// why the pre-emptive sweep below already works and why registering
+	// early costs nothing.
 	const name = "whyopen-integration"
+	t.Cleanup(func() { exec.Command("docker", "rm", "-f", name).Run() })
 	exec.Command("docker", "rm", "-f", name).Run()
 	run(t, "docker", "run", "-d", "--name", name,
 		"-p", "0.0.0.0:18080:80", "nginx:alpine")
-	t.Cleanup(func() { exec.Command("docker", "rm", "-f", name).Run() })
 
 	out, err := exec.Command(binaryPath, "collect").Output()
 	if err != nil {
@@ -57,5 +76,26 @@ func TestRealDockerPublishIsReported(t *testing.T) {
 	}
 	if v.Endpoint.Owner != name {
 		t.Errorf("owner = %q, want the container name %q", v.Endpoint.Owner, name)
+	}
+
+	// The reason string names DNAT regardless of which hook the packet was
+	// evaluated against, so it cannot by itself distinguish a real forward
+	// traversal from a regression that misclassifies the container's bridge
+	// address as local and evaluates against input instead. Assert on the
+	// path directly, the way TestPublishOnAllInterfacesIsReachableDespiteInputDeny
+	// does in ruleset_test.go: a forward hit must be present and no input
+	// hit may appear.
+	var sawForward, sawInput bool
+	for _, h := range v.Path {
+		switch h.Hook {
+		case "forward":
+			sawForward = true
+		case "input":
+			sawInput = true
+		}
+	}
+	if !sawForward || sawInput {
+		t.Errorf("path hooks wrong (forward=%v input=%v): the DNAT'd packet must take the forward hook only",
+			sawForward, sawInput)
 	}
 }
