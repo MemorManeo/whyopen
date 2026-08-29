@@ -13,12 +13,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/MemorManeo/whyopen/internal/facts"
 	"github.com/MemorManeo/whyopen/internal/model"
+	"golang.org/x/sys/unix"
 )
 
 // binaryPath is the whyopen binary under test, built once by TestMain.
@@ -110,6 +112,38 @@ func newNetns(t *testing.T) string {
 func nsRun(t *testing.T, ns string, name string, args ...string) string {
 	t.Helper()
 	return run(t, "ip", append([]string{"netns", "exec", ns, name}, args...)...)
+}
+
+// inNetns runs fn with the calling thread attached to the namespace. The
+// thread is locked for the duration and restored afterwards, which is why
+// every other test shells out to the binary instead: this is only worth it
+// when the test itself must speak netlink.
+func inNetns(t *testing.T, ns string, fn func()) {
+	t.Helper()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	original, err := os.Open("/proc/self/ns/net")
+	if err != nil {
+		t.Fatalf("open current netns: %v", err)
+	}
+	defer original.Close()
+
+	target, err := os.Open("/var/run/netns/" + ns)
+	if err != nil {
+		t.Fatalf("open target netns: %v", err)
+	}
+	defer target.Close()
+
+	if err := unix.Setns(int(target.Fd()), unix.CLONE_NEWNET); err != nil {
+		t.Fatalf("setns into %s: %v", ns, err)
+	}
+	defer func() {
+		if err := unix.Setns(int(original.Fd()), unix.CLONE_NEWNET); err != nil {
+			t.Fatalf("setns back: %v", err)
+		}
+	}()
+	fn()
 }
 
 // collectIn runs the real binary inside the namespace and decodes its facts
