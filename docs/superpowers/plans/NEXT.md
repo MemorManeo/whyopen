@@ -49,18 +49,33 @@ What is left of it: only the three captured `check_set` bit patterns decode.
 and closing that needs a fresh capture rather than an inference from the
 pattern the other three follow.
 
-## 4. Native nftables expression decoding
+## 4. Native nftables expression decoding (`Ct` landed in v0.2)
 
 Captured, not speculative: `docs/decisions/0004-firewalld-expressions.md`
 applied a firewalld-shaped ruleset in a namespace and recorded what
-`google/nftables` actually returns. Decode `expr.Lookup` first (named and
-anonymous sets; needs the collector to read set elements, which it does not
-today), then `expr.Ct` for `CtKeySTATE`, which arrives as one of two
-different shapes depending on whether the source used a comma list or a
-brace list, both documented there. `expr.Range` is deferred: the capture
-found no evidence it is needed. The nftables library silently discards any
-expression name it has no case for before whyopen ever sees it; 0004's
-"drop question" section records what was and was not tested for that.
+`google/nftables` actually returns. The plan there was to decode
+`expr.Lookup` first (named and anonymous sets; needs the collector to read
+set elements, which it does not today), then `expr.Ct` for `CtKeySTATE`,
+which arrives as one of two different shapes depending on whether the
+source used a comma list or a brace list, both documented there. `expr.Range`
+is deferred: the capture found no evidence it is needed. The nftables
+library silently discards any expression name it has no case for before
+whyopen ever sees it; 0004's "drop question" section records what was and
+was not tested for that.
+
+What landed, out of the order that plan named: `Ct` for `CtKeySTATE`'s
+comma-list shape (`ct state established,related accept`, `ct state invalid
+drop`), decoded in `internal/collect/nftconv.go` and resolved through the
+existing `Bitwise`/`Cmp` machinery already in `internal/model/match.go`,
+proven against a real kernel by `TestNativeCtStateAcceptResolvesReachable`.
+See `docs/decisions/0004-firewalld-expressions.md`'s own "Update (v0.2)"
+section for detail.
+
+What is left: `expr.Lookup` is still undecoded, so the brace-list shape
+(`ct state { established, related } accept`) still reports `unknown`, and
+so does every other rule that depends on a named or anonymous set: a port
+set, an interface set, a `meta l4proto { tcp, udp }` match. Decoding
+`Lookup`, and reading set elements to support it, is still queued.
 
 ## 5. Probe and reconcile
 

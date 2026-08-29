@@ -238,3 +238,30 @@ use, that capture should drive the decision, not this one.
   exact mechanism, `exprFromName` returning `nil` and the caller
   continuing past it, was confirmed by reading the library source, not by
   observing it happen).
+
+
+## Update (v0.2)
+
+`Ct` was decoded in v0.2, for the comma-list shape only, exactly the split
+this record's decision anticipated. A native `ct state established,related
+accept` or `ct state invalid drop` rule now decodes (`convertCt` in
+`internal/collect/nftconv.go`, `CtKeySTATE` loaded into a destination
+register) and resolves through the existing `Bitwise`/`Cmp` register
+machine unchanged (`ctBytes` in `internal/model/match.go`), the
+mask-and-compare idiom described above under "`ct state` compiles two
+different ways, not one". `TestNativeCtStateAcceptResolvesReachable`
+(`test/integration/ruleset_test.go`) proves it against a real kernel: a
+`ct state established,related accept` rule now resolves a port `reachable`
+instead of `unknown`.
+
+The brace-list shape, `ct state { established, related } accept`, still
+does not decode. It compiles to `Ct` plus `Lookup`, and `Lookup` has no
+decoder yet, so decoding `Ct` alone was never going to close it; that is
+exactly the dependency this record's decision named. `TestCaptureFirewalldExpressions`
+was updated to hold this line precisely: `*expr.Ct` moved from the unknown
+side of the census to the decoded side, `*expr.Lookup` did not move, and
+the test fails again the day either fact stops being true.
+
+The census and decision above are left exactly as captured. Their value is
+in being an honest record of what the capture found and what was decided
+from it at the time, not in being edited to match what shipped later.

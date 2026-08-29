@@ -128,15 +128,18 @@ func captureXtPayloads(t *testing.T, ns string, name string) []xtPayload {
 // statement visible in the nft text with no matching Go type in the log
 // below is that gap, not a bug in this test.
 //
-// It also enforces decision 0004's two specific claims by name: that
-// native ct state (*expr.Ct, which has no case in ConvertExprs at all) and
-// set membership (*expr.Lookup, likewise undecoded, produced here by the
-// interface set, the port set and the "meta l4proto { tcp, udp }" match
-// independently of one another) are both still among the expressions
-// whyopen reports as unknown. Naming the two types is the point: merely
-// counting distinct undecoded types would stay green once v0.2 decodes
-// these two, as long as any other two shapes were still undecoded, and
-// 0004 would go stale in silence.
+// It also enforces decision 0004's two specific claims by name, named
+// individually rather than merely counted: a stray count would stay green
+// as long as any two shapes were undecoded, letting 0004 go stale in
+// silence. Set membership (*expr.Lookup, produced here by the interface
+// set, the port set and the "meta l4proto { tcp, udp }" match independently
+// of one another) has no decoder yet and must still be among the
+// expressions whyopen reports as unknown. Native ct state (*expr.Ct) was
+// decoded in v0.2 for the comma-list shape ("ct state established,related
+// accept"), so every occurrence of it, including the one that precedes the
+// still-undecoded Lookup in the brace-list rule ("ct state { established,
+// related } accept"), must now be among the expressions whyopen decodes
+// instead.
 func TestCaptureFirewalldExpressions(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "nft")
@@ -203,16 +206,26 @@ table inet whyopen_fw {
 	if len(census.unknown) == 0 {
 		t.Fatalf("expected at least one expression whyopen currently reports as unknown, found none: either this shape no longer reaches the kernel as written, or whyopen has grown a decoder for everything this ruleset produces and this record is stale")
 	}
-	// The two types decision 0004 names as undecoded, asserted individually
-	// so that decoding either one fails this test rather than being masked
-	// by some other shape that happens to remain unknown.
-	for _, want := range []string{
-		fmt.Sprintf("%T", &expr.Ct{}),
-		fmt.Sprintf("%T", &expr.Lookup{}),
-	} {
-		if census.unknown[want] == 0 {
-			t.Fatalf("expected %s among the expressions whyopen reports as unknown, found none: decision 0004's claims no longer hold and docs/decisions/0004-firewalld-expressions.md needs revisiting. Unknown census: %v", want, census.unknown)
-		}
+	// Lookup still has no decoder (docs/decisions/0004), so it must remain
+	// among the expressions whyopen reports as unknown. Asserted on its own
+	// so decoding it later fails this test rather than being masked by some
+	// other shape that happens to still be undecoded.
+	wantUnknown := fmt.Sprintf("%T", &expr.Lookup{})
+	if census.unknown[wantUnknown] == 0 {
+		t.Fatalf("expected %s among the expressions whyopen reports as unknown, found none: decision 0004's claims no longer hold and docs/decisions/0004-firewalld-expressions.md needs revisiting. Unknown census: %v", wantUnknown, census.unknown)
+	}
+	// Ct was decoded in v0.2 (docs/decisions/0004's comma-list "ct state"
+	// shape, e.g. "ct state established,related accept"): every occurrence
+	// here, including the one that precedes the still-undecoded Lookup in
+	// the brace-list rule, must now be in the decoded set and gone from the
+	// unknown one. This turns what was a staleness guard for an undecoded
+	// Ct into a regression guard for the decoder that replaced it.
+	wantDecoded := fmt.Sprintf("%T", &expr.Ct{})
+	if census.known[wantDecoded] == 0 {
+		t.Fatalf("expected %s among the expressions whyopen decodes, found none: the v0.2 ct state decoder may have regressed. Known census: %v", wantDecoded, census.known)
+	}
+	if census.unknown[wantDecoded] != 0 {
+		t.Fatalf("expected %s to no longer be reported unknown now that the v0.2 ct state decoder exists, but it still was. Unknown census: %v", wantDecoded, census.unknown)
 	}
 }
 
