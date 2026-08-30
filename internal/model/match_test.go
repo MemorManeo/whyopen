@@ -658,15 +658,30 @@ func TestLookupRefusalSetNotInDocument(t *testing.T) {
 	}
 }
 
-// An interval (range) set is not a flat membership list; whyopen does not
-// model ranges.
-func TestLookupRefusalIntervalSet(t *testing.T) {
+// An interval set's elements are bounds, not members, and this is the test
+// that keeps them from being read as members. It used to assert that such
+// a set is refused outright, which was right while whyopen did not model
+// ranges (v0.2) and stopped being right when decision 0011 captured what
+// one contains.
+//
+// The set here holds a single element, a start at 22 with no end above it,
+// which the capture says means "22 to the top of the range". Read as a
+// flat membership list it would mean the set is exactly {22}. Port 23
+// tells the two readings apart.
+func TestIntervalSetElementsAreBoundsNotMembers(t *testing.T) {
 	sets := []facts.Set{{Name: "ports", Interval: true, Elements: []facts.SetElement{
 		{Key: hex.EncodeToString([]byte{0, 22})},
 	}}}
 	rule := dportLookupRule(facts.LookupExpr{SourceRegister: 1, Set: "ports"})
-	if out, _ := MatchRule(testPacket(), rule, sets); out != OutcomeUnknown {
-		t.Fatalf("out=%v, want unknown: an interval set is not a flat membership list", out)
+
+	p := testPacket()
+	p.DstPort = 23
+	if out, _ := MatchRule(p, rule, sets); out != OutcomeMatch {
+		t.Fatalf("out=%v, want match: 23 is inside [22, top], and only a flat reading would miss it", out)
+	}
+	p.DstPort = 21
+	if out, _ := MatchRule(p, rule, sets); out != OutcomeNoMatch {
+		t.Fatalf("out=%v, want no match: 21 is below the interval's start", out)
 	}
 }
 
@@ -1001,19 +1016,62 @@ func TestIntervalSetMembership(t *testing.T) {
 	}
 }
 
-// An interval whose upper bound is the top of the type's range has an
-// exclusive end that wraps to zero, which is indistinguishable from the
-// sentinel and leaves a start with nothing above it. That shape was never
-// captured, so it is refused rather than read as running to the top.
-func TestIntervalSetRefusesADanglingStart(t *testing.T) {
-	s := facts.Set{Name: "ports", Interval: true, Elements: []facts.SetElement{
+// An interval reaching the top of the key type's range has no end element
+// at all: its exclusive end would be one past the maximum. It is the last
+// start, left dangling, which decision 0011's v1.2 update captured. This
+// used to be refused, on a guess about what such a set would look like
+// that the capture then contradicted.
+//
+// These are the exact element lists the kernel returned for
+// `{ 1024-65535 }`, for `{ 100-200, 1024-65535 }`, and for
+// `{ 0-100, 1024-65535 }`. The third carries no zero sentinel at all,
+// because key 0 is the start of its first interval, and it is the one that
+// shows a dangling start means "to the top" on its own.
+func TestIntervalSetReadsATopOfRangeInterval(t *testing.T) {
+	toTheTop := facts.Set{Name: "ports", Interval: true, Elements: []facts.SetElement{
 		{Key: "0000", IntervalEnd: true},
-		{Key: "0400"}, // 1024, with no end above it
+		{Key: "0400"},
+	}}
+	topAndMiddle := facts.Set{Name: "ports", Interval: true, Elements: []facts.SetElement{
+		{Key: "0400"},
+		{Key: "00c9", IntervalEnd: true},
+		{Key: "0064"},
+		{Key: "0000", IntervalEnd: true},
+	}}
+	bottomAndTop := facts.Set{Name: "ports", Interval: true, Elements: []facts.SetElement{
+		{Key: "0400"},
+		{Key: "0065", IntervalEnd: true},
+		{Key: "0000"},
+	}}
+
+	for name, c := range map[string]struct {
+		set  facts.Set
+		want map[uint16]Outcome
+	}{
+		"1024-65535":       {toTheTop, map[uint16]Outcome{1023: OutcomeNoMatch, 1024: OutcomeMatch, 40000: OutcomeMatch, 65535: OutcomeMatch}},
+		"100-200,1024-":    {topAndMiddle, map[uint16]Outcome{99: OutcomeNoMatch, 150: OutcomeMatch, 300: OutcomeNoMatch, 65535: OutcomeMatch}},
+		"0-100,1024-65535": {bottomAndTop, map[uint16]Outcome{0: OutcomeMatch, 100: OutcomeMatch, 101: OutcomeNoMatch, 65535: OutcomeMatch}},
+	} {
+		for port, want := range c.want {
+			p := testPacket()
+			p.DstPort = port
+			if out, _ := MatchRule(p, lookupRule("ports"), []facts.Set{c.set}); out != want {
+				t.Errorf("%s port %d: out = %v, want %v", name, port, out, want)
+			}
+		}
+	}
+}
+
+// Two starts with nothing between them is a shape none of the five
+// captured sets produced, and the pairing cannot mean anything by it.
+func TestIntervalSetRefusesTwoConsecutiveStarts(t *testing.T) {
+	s := facts.Set{Name: "ports", Interval: true, Elements: []facts.SetElement{
+		{Key: "0064"}, {Key: "0400"}, {Key: "1000", IntervalEnd: true},
 	}}
 	p := testPacket()
 	p.DstPort = 2000
 	if out, _ := MatchRule(p, lookupRule("ports"), []facts.Set{s}); out != OutcomeUnknown {
-		t.Fatalf("out = %v, want unknown: the interval has no end whyopen has seen", out)
+		t.Fatalf("out = %v, want unknown", out)
 	}
 }
 

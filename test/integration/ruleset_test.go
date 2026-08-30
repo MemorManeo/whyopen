@@ -662,6 +662,42 @@ table inet filter {
 	}
 }
 
+// An interval reaching the top of the port range, which is the shape a
+// real host writes when it opens the ephemeral range. whyopen refused it
+// until a capture showed such an interval simply has no end element, and
+// this is that reading against a kernel rather than against the element
+// list a test wrote out by hand.
+func TestTopOfRangeIntervalResolves(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	listenIn(t, ns, "0.0.0.0", "40000")
+	listenIn(t, ns, "0.0.0.0", "1023")
+	applyNftRuleset(t, ns, `
+table inet filter {
+	set ephemeral {
+		type inet_service
+		flags interval
+		elements = { 1024-65535 }
+	}
+
+	chain input {
+		type filter hook input priority 0; policy drop;
+		tcp dport @ephemeral accept
+	}
+}
+`)
+
+	vs := evaluate(collectIn(t, ns))
+	if v := verdictFor(vs, 40000, "ip"); v == nil || v.Result != "reachable" {
+		t.Fatalf("40000 = %+v, want reachable: it is inside 1024-65535", v)
+	}
+	if v := verdictFor(vs, 1023, "ip"); v == nil || v.Result != "filtered" {
+		t.Fatalf("1023 = %+v, want filtered: it is below the interval", v)
+	}
+}
+
 // The negated form, which is the one that actually produces an
 // expr.Range. The chain accepts by default and drops everything outside
 // the range, so a port inside it survives and one outside does not.

@@ -451,11 +451,13 @@ func lookupMatch(reg []byte, lk *facts.LookupExpr, sets []facts.Set) (hit bool, 
 // and it does not return them in any order worth relying on. All of that
 // is what decision 0011 captured from a live kernel.
 //
-// It refuses a start with no end above it. That is exactly what an
-// interval reaching the top of the type's range looks like, since its
-// exclusive end wraps to zero and becomes indistinguishable from the
-// sentinel, and reading it as running to the top would be inventing a
-// shape nobody has observed.
+// A start with no end above it is the last interval running to the top of
+// the key type's range: such an interval has no end element at all, since
+// its exclusive end would be one past the maximum. A zero-keyed end is
+// something else, the sentinel saying the region below the first interval
+// is not a member, and it pairs with nothing. Those two never have to be
+// told apart, which decision 0011's v1.2 update captured across five set
+// shapes chosen so the alternative readings would disagree.
 func intervalMatch(reg []byte, lk *facts.LookupExpr, s facts.Set) (hit bool, ok bool) {
 	type bound struct {
 		key []byte
@@ -509,7 +511,10 @@ func intervalMatch(reg []byte, lk *facts.LookupExpr, s facts.Set) (hit bool, ok 
 		start = nil
 	}
 	if start != nil {
-		return false, false
+		// The last interval runs to the top of the key space.
+		if bytes.Compare(v, start) >= 0 {
+			member = true
+		}
 	}
 
 	if lk.Invert {

@@ -74,16 +74,15 @@ Known gaps that produce `unknown` today:
   produced: `ct state established,related accept` and `ct state
   { established, related } accept` compile to two different netlink shapes
   and both resolve, as do an anonymous set (`tcp dport { 22, 80 }`) and a
-  named one (`tcp dport @allowed`). Ranges do too, in all three shapes a
-  capture found them in: `tcp dport 1024-2048`, which the kernel compiles
-  to two ordered comparisons rather than to a range expression at all, its
+  named one (`tcp dport @allowed`). Ranges do too, in every shape a capture
+  found them in: `tcp dport 1024-2048`, which the kernel compiles to two
+  ordered comparisons rather than to a range expression at all, its
   negation, which is the form that does produce one, and a range inside a
-  set, named or anonymous. What still reports `unknown` there is an
-  interval whose upper bound is the top of the type's range, whose
-  exclusive end wraps to zero and becomes indistinguishable from the
-  sentinel below the first interval; and, deliberately, a set whyopen will
-  not read as a flat membership test: a map or verdict map, a concatenated
-  key type, or a set whose elements the facts document does not carry.
+  set, named or anonymous, including one reaching the top of the port
+  range. What whyopen still refuses there is a set it will not read as a
+  membership test at all: a map or verdict map, a concatenated key type, a
+  set whose elements the facts document does not carry, or an element
+  layout no capture has produced.
 - A base chain on the **ingress** hook. It runs before prerouting, sees
   raw frames rather than the IP-level context whyopen evaluates in, and
   can drop a packet before any rule whyopen walks, so a port whose traffic

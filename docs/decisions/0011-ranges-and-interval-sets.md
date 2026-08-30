@@ -111,3 +111,36 @@ representation was not observed and mixing the two would be a guess.
 set containing a range all resolve. What remains `unknown` in this area is
 an interval whose upper bound is the top of the type's range, and the two
 set shapes decision 0005 already refuses for their own reasons.
+
+## Update (v1.2): the top-of-range interval, captured
+
+The refusal above ("a start with no end above it is refused rather than
+read as running to the top") was written without evidence for what such a
+set looks like. It has now been captured (CI runs `33322158110` and the
+one after it, `TestCaptureTopOfRangeInterval`), across five shapes chosen
+so that the two plausible readings would disagree:
+
+| set | elements, sorted ascending |
+|---|---|
+| `{ 100-200, 8080 }` | `0`(end) `100`(start) `201`(end) `8080`(start) `8081`(end) |
+| `{ 0-1023 }` | `0`(start) `1024`(end) |
+| `{ 1024-65535 }` | `0`(end) `1024`(start) |
+| `{ 100-200, 1024-65535 }` | `0`(end) `100`(start) `201`(end) `1024`(start) |
+| `{ 0-100, 1024-65535 }` | `0`(start) `101`(end) `1024`(start) |
+
+The reading that fits all five is simpler than the ambiguity this record
+feared. Pair each start with the next end above it. A zero-keyed **end** is
+the sentinel saying the region below the first interval is not a member,
+and it pairs with nothing. An interval reaching the top of the key space
+has no end element at all: it is the last start, left dangling.
+
+The fifth shape is the one that settles it. `{ 0-100, 1024-65535 }` has no
+zero-keyed end anywhere, because key 0 is the start of the first interval,
+and the top interval is still just a dangling start. So a dangling start
+means "to the top" regardless of whether a zero sentinel is present, and
+the two never have to be told apart.
+
+**The refusal is lifted.** A dangling start at the end of the walk is read
+as running to the top of the key type's range, inclusive. Two consecutive
+starts anywhere else are still refused, a shape none of the five produced
+and which the pairing above cannot mean anything by.

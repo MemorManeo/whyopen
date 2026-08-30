@@ -284,9 +284,11 @@ evidence or a user rather than a decision.
   range expression at all, it compiles to two ordered comparisons, so a
   decoder written from that guess would have closed the rare negated form
   and left the common one open. All three shapes resolve now, recorded in
-  `docs/decisions/0011-ranges-and-interval-sets.md`. What is left there is
-  an interval reaching the top of the type's range, whose end wraps to
-  zero and is indistinguishable from the sentinel: its own capture.
+  `docs/decisions/0011-ranges-and-interval-sets.md`. The interval reaching
+  the top of the type's range, which that record deferred, was captured in
+  v1.2 and resolves too: such an interval simply has no end element, and
+  five captured set shapes settle that it never has to be told apart from
+  the zero sentinel.
 - ~~**`xt recent --remove`.**~~ Done in v1.1. Captured at 0x08, which is
   what the pattern of the other three predicted. Decision 0003's update
   records that the inference would have been right and that refusing it
@@ -297,10 +299,18 @@ evidence or a user rather than a decision.
   `internal/collect/chaindev.go` exists. When that lands upstream, delete
   the file and the exception in decision 0006 rather than keeping a second
   source of the same truth.
-- **firewalld against the daemon.** Everything whyopen decodes for it was
-  captured from a firewalld-shaped ruleset applied by hand. That was
-  deliberate (the ruleset is what matters, not the daemon), but nobody has
-  run whyopen on a host where firewalld itself wrote the rules.
+- ~~**firewalld against the daemon.**~~ Done in v1.2, and it found
+  something on the first run: a real firewalld emits `ct status dnat
+  accept` in filter_INPUT and filter_FORWARD, which the hand-written
+  ruleset never produced and which made every port on such a host unknown.
+  A CI job now installs and starts the daemon, asserts that every native
+  expression it emits decodes, and checks the verdicts against what
+  `firewall-cmd` was told to open. One construct is a documented gap
+  rather than a decoded one: firewalld's IPv6 reverse-path check
+  (`fib saddr . mark . iif oif missing`) depends on the host's routing
+  table, which whyopen does not collect, so IPv6 verdicts there are
+  unknown. Collecting routes would close it and is not obviously worth
+  the collector it would need.
 - **A native expression whyopen cannot type keeps nothing.** Decision 0007
   closed this for xt payloads. There is no equivalent opaque blob behind a
   typed native expression, so the same fix does not apply, and what
