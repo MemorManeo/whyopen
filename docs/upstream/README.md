@@ -10,9 +10,14 @@ netlink read to recover that, and said plainly what should happen next:
 > itself, `chaindev.go` and this decision's exception should be deleted
 > rather than kept as a second source of the same truth.
 
-`nftables-hook-devices.patch` is that patch, prepared against v0.3.0 and
-not yet submitted. Submitting it is a decision for the repository owner,
-not something whyopen's tooling does on its own.
+`nftables-hook-devices.patch` is that patch, and it is not yet submitted.
+Submitting it is a decision for the repository owner, not something
+whyopen's tooling does on its own.
+
+It is rebased onto upstream `main` at `f9b52ed` ("userdata: fix
+out-of-bounds panic in Get (#359)", 38 commits past v0.3.0), where it
+applies with a plain `git am`, and it carries the commit message the pull
+request should have. Rebase it again if it goes stale before it is sent.
 
 ## What it does
 
@@ -26,11 +31,17 @@ exactly as before.
 
 ## What was checked
 
-- The library's own test suite passes unchanged.
-- Three new tests cover the single-device attribute, the nested list, and
-  a chain with no device at all.
-- whyopen builds and its unit suite passes against the patched library,
-  through a temporary `replace` directive, so the API change is
+Re-checked on 2026-08-30 against `main` at `f9b52ed`, not only against
+the v0.3.0 the patch was first written on:
+
+- The patch applies to that commit with `git am`, no three-way merge and
+  no conflict.
+- The library's own test suite passes, and `gofmt` and `go vet` are clean
+  on the patched tree.
+- Its three new tests run and pass: the single-device attribute, the
+  nested `NFTA_HOOK_DEVS` list, and a chain with no device at all.
+- whyopen builds and its whole unit suite passes against the patched
+  library, through a temporary `replace` directive, so the API change is
   compatible with at least one real consumer.
 
 Not checked: the patched library against a live kernel. whyopen's own
@@ -44,9 +55,11 @@ against a kernel with an ingress chain.
 git clone https://github.com/google/nftables && cd nftables
 git checkout -b hook-devices
 git am /path/to/nftables-hook-devices.patch
-# rebase onto the current main first: the patch is against v0.3.0
 gh pr create --title "chain: read the hook device attributes back" --body-file <(...)
 ```
+
+The patch is authored as the repository owner, so the commit needs no
+`--author` fixing before it is sent.
 
 Suggested PR body:
 

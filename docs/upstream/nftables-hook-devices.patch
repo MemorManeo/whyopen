@@ -1,8 +1,21 @@
-From f5e05ad50cc32324ba4cc6c5140769603ceef732 Mon Sep 17 00:00:00 2001
-From: x <x@y>
-Date: Sun, 30 Aug 2026 18:47:00 +0200
-Subject: [PATCH] read hook devices
+From ea8548f6a4beaa530a1274962b56d21e9c741697 Mon Sep 17 00:00:00 2001
+From: MemorManeo <304054918+MemorManeo@users.noreply.github.com>
+Date: Sun, 30 Aug 2026 20:45:10 +0200
+Subject: [PATCH] chain: read the hook device attributes back
 
+AddChain marshals NFTA_HOOK_DEV, but hookFromMsg reads only the hook
+number and the priority, so a chain read back from the kernel never
+carries the device its hook is attached to. That makes an ingress or
+egress chain indistinguishable from one attached to every device.
+
+This reads NFTA_HOOK_DEV and the NFTA_HOOK_DEVS list, and adds
+Chain.Devices for the multi-device case that a single string cannot
+represent. AddChain marshals the list when one is set, so such a chain
+round-trips. Setting Device alone is unchanged.
+
+Found while writing a tool that reads rulesets over netlink: without the
+device, an ingress chain has to be treated as seeing every packet, which
+makes every verdict on such a host unusable.
 ---
  chain.go             | 63 ++++++++++++++++++++++++++++++++++----
  chain_device_test.go | 73 ++++++++++++++++++++++++++++++++++++++++++++
@@ -10,7 +23,7 @@ Subject: [PATCH] read hook devices
  create mode 100644 chain_device_test.go
 
 diff --git a/chain.go b/chain.go
-index 4f4c0a5..d08e723 100644
+index a0d18fd..ef2117e 100644
 --- a/chain.go
 +++ b/chain.go
 @@ -102,7 +102,14 @@ type Chain struct {
@@ -52,7 +65,7 @@ index 4f4c0a5..d08e723 100644
  			hookAttr = append(hookAttr, netlink.Attribute{Type: unix.NFTA_HOOK_DEV, Data: []byte(c.Device + "\x00")})
  		}
  
-@@ -295,7 +316,12 @@ func chainFromMsg(msg netlink.Message) (*Chain, error) {
+@@ -311,7 +332,12 @@ func chainFromMsg(msg netlink.Message) (*Chain, error) {
  			c.Policy = &policy
  		case unix.NFTA_CHAIN_HOOK:
  			ad.Do(func(b []byte) error {
@@ -66,7 +79,7 @@ index 4f4c0a5..d08e723 100644
  				return err
  			})
  		}
-@@ -304,16 +330,25 @@ func chainFromMsg(msg netlink.Message) (*Chain, error) {
+@@ -320,16 +346,25 @@ func chainFromMsg(msg netlink.Message) (*Chain, error) {
  	return &c, nil
  }
  
@@ -94,7 +107,7 @@ index 4f4c0a5..d08e723 100644
  
  	for ad.Next() {
  		switch ad.Type() {
-@@ -321,8 +356,24 @@ func hookFromMsg(b []byte) (*ChainHook, *ChainPriority, error) {
+@@ -337,8 +372,24 @@ func hookFromMsg(b []byte) (*ChainHook, *ChainPriority, error) {
  			hooknum = ChainHook(ad.Uint32())
  		case unix.NFTA_HOOK_PRIORITY:
  			prio = ChainPriority(ad.Uint32())

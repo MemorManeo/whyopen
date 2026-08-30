@@ -298,7 +298,12 @@ evidence or a user rather than a decision.
   `NFTA_HOOK_DEV` when it reads a chain back, which is why
   `internal/collect/chaindev.go` exists. When that lands upstream, delete
   the file and the exception in decision 0006 rather than keeping a second
-  source of the same truth.
+  source of the same truth. The patch is rebased onto upstream `main` at
+  `f9b52ed`, where it applies with a plain `git am`, its own tests and the
+  library's suite pass there, and whyopen builds and tests against it
+  through a `replace`; `docs/upstream/README.md` records all of that.
+  Sending the pull request is the one step left, and it is the repository
+  owner's to take.
 - ~~**firewalld against the daemon.**~~ Done in v1.2, and it found
   something on the first run: a real firewalld emits `ct status dnat
   accept` in filter_INPUT and filter_FORWARD, which the hand-written
