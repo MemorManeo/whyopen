@@ -40,7 +40,12 @@ func Table(w io.Writer, vs []model.Verdict, warns []facts.Warning) {
 	tw.Flush()
 
 	if len(warns) > 0 {
-		fmt.Fprintln(w, "\nwarnings (the snapshot is incomplete, verdicts above may be too):")
+		// Two kinds of warning land here and the heading has to fit both:
+		// something collection could not see, which makes the verdicts
+		// above less trustworthy, and something the ruleset does that
+		// whyopen cannot put in a row at all, which makes the table less
+		// complete. Neither is covered by reading the table alone.
+		fmt.Fprintln(w, "\nwarnings (the table above is not the whole story):")
 		for _, x := range warns {
 			fmt.Fprintf(w, "  %s: %s\n", x.Source, x.Message)
 		}

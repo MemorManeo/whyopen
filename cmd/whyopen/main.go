@@ -265,6 +265,7 @@ func runCheck(args []string) int {
 
 	zone := model.InternetZone()
 	verdicts := model.Evaluate(f, zone)
+	warnings := warningsFor(f)
 
 	// Reality first, then the policy: a policy decides against what is
 	// actually reachable, not against what the ruleset was read to mean.
@@ -296,7 +297,7 @@ func runCheck(args []string) int {
 			Version:       currentVersion().Version,
 			Hostname:      f.Host.Hostname,
 			Zone:          zone.Name,
-			Warnings:      f.Warnings,
+			Warnings:      warnings,
 			Policy:        res,
 			PolicySource:  *policyPath,
 			WithPath:      *explain != 0,
@@ -315,7 +316,7 @@ func runCheck(args []string) int {
 			report.Explain(os.Stdout, v)
 		}
 	} else {
-		report.Table(os.Stdout, verdicts, f.Warnings)
+		report.Table(os.Stdout, verdicts, warnings)
 	}
 
 	// The probe block prints above the policy block: a disagreement means
@@ -337,6 +338,21 @@ func runCheck(args []string) int {
 	// ruleset is a tool error, not a clean run, no matter how it was
 	// displayed.
 	return checkExitCode(f, res)
+}
+
+// warningsFor is everything the run has to say beyond the verdicts: what
+// collection could not see, and the destination rewrites whose forwarded
+// ports whyopen could not turn into rows. The two are printed together
+// because a reader needs the same thing from both, a reason not to trust
+// the table as the whole story.
+func warningsFor(f facts.Facts) []facts.Warning {
+	notes := model.ForwardNotes(f)
+	if len(notes) == 0 {
+		return f.Warnings
+	}
+	out := make([]facts.Warning, 0, len(f.Warnings)+len(notes))
+	out = append(out, f.Warnings...)
+	return append(out, notes...)
 }
 
 // onPort narrows a verdict set to one port, which is what --explain asks

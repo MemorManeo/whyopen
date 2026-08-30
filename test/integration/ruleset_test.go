@@ -1043,14 +1043,14 @@ table inet filter {
 }
 
 // A host that forwards a port to another machine on its LAN, which is
-// what a router or a VM host does and what nothing in this suite has ever
-// modelled. Docker's publishes look like this too, but whyopen learns
-// about those from the Docker API; a hand-written DNAT has no such
-// registry behind it.
+// what a router or a VM host does. Docker's publishes look like this too,
+// but whyopen learns about those from the Docker API; a hand-written DNAT
+// has no such registry behind it, so the port has no listening socket here
+// and no publish, and whyopen reported nothing at all for it: no row, not
+// even unknown, which a reader takes for nothing being exposed.
 //
-// This asserts what whyopen does today rather than what it should do,
-// because that is the thing worth finding out: whether a forwarded port
-// with nothing listening locally appears at all.
+// The scan in internal/model/forwards.go is the third endpoint source that
+// closes it, and this is the case it exists for.
 func TestHandWrittenPortForwardIsVisible(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "nft", "python3")
@@ -1087,11 +1087,54 @@ table inet filter {
 
 	v := verdictFor(vs, 8080, "ip")
 	if v == nil {
-		t.Logf("FINDING: whyopen reports nothing for 8080. It derives endpoints from listening "+
-			"sockets and Docker publishes, and a hand-written DNAT to another machine is neither, "+
-			"so a port this host forwards to its LAN is invisible. Sockets seen: %d, docker: %v",
+		t.Fatalf("no verdict for 8080: this host forwards it to 192.0.2.50 and reports nothing, "+
+			"which reads as nothing being exposed. Sockets seen: %d, docker: %v",
 			len(f.Sockets), f.Docker.Available)
-		return
 	}
-	t.Logf("whyopen reports 8080 = %s (%s)", v.Result, v.Reason)
+	if v.Endpoint.Kind != "forward" {
+		t.Errorf("kind = %q, want forward: no socket and no container on this host owns the port",
+			v.Endpoint.Kind)
+	}
+	if v.Result != "reachable" {
+		t.Fatalf("8080 = %s (%s), want reachable: the rewrite lands on lan0 and the forward chain accepts it",
+			v.Result, v.Reason)
+	}
+	if !strings.Contains(v.Reason, "192.0.2.50:80") {
+		t.Errorf("reason = %q, want it to name the machine the port is forwarded to", v.Reason)
+	}
+	// The one claim whyopen cannot make here: it never saw the far side.
+	if !strings.Contains(v.Reason, "not that anything answers") {
+		t.Errorf("reason = %q, want it to stop short of claiming a listener behind the rewrite", v.Reason)
+	}
+}
+
+// A rewrite with no port constraint forwards every port, which whyopen
+// reports one at a time and cannot list. It must still not be silent about
+// it, so the run says so where the incomplete-snapshot warnings go.
+func TestPortForwardWithNoPortConstraintIsReported(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft")
+
+	ns := newNetns(t)
+	nsRun(t, ns, "ip", "link", "add", "lan0", "type", "dummy")
+	nsRun(t, ns, "ip", "addr", "add", "192.0.2.1/24", "dev", "lan0")
+	nsRun(t, ns, "ip", "link", "set", "lan0", "up")
+	nsRun(t, ns, "sysctl", "-qw", "net.ipv4.ip_forward=1")
+
+	applyNftRuleset(t, ns, `
+table ip nat {
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		ip daddr 203.0.113.10 dnat to 192.0.2.50
+	}
+}
+`)
+
+	out, code := runBinary(t, nil, inNs(ns, binaryPath, "check")...)
+	if code != 0 {
+		t.Fatalf("check exited %d, want 0:\n%s", code, out)
+	}
+	if !strings.Contains(out, "every port") || !strings.Contains(out, "192.0.2.50") {
+		t.Fatalf("check said nothing about a rule that forwards every port to 192.0.2.50:\n%s", out)
+	}
 }

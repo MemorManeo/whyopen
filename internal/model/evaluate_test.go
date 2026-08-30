@@ -62,6 +62,12 @@ func dockerNATTo(hostIP string, port uint16, targetIP string) facts.Table {
 		)
 	}
 	exprs = append(exprs,
+		// The protocol byte, which the captured Docker rule in
+		// testdata/facts/ufw-docker-host.json carries: without it the rule
+		// would say it forwards whatever transport header arrives, and the
+		// scan in forwards.go would correctly report udp as well as tcp.
+		facts.Expr{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "network", Offset: 9, Len: 1}},
+		facts.Expr{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: "06"}},
 		facts.Expr{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
 		facts.Expr{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1,
 			Data: string([]byte{"0123456789abcdef"[port>>12&0xf], "0123456789abcdef"[port>>8&0xf], "0123456789abcdef"[port>>4&0xf], "0123456789abcdef"[port&0xf]})}},

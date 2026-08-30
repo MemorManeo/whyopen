@@ -25,12 +25,14 @@ func InternetZone() Zone {
 	}
 }
 
-// Endpoint is something that can receive a connection. It comes either from a
-// listening socket on the host, or from a Docker publish, because a
-// container's socket lives in another network namespace and never appears in
-// the host's /proc/net/tcp.
+// Endpoint is something that can receive a connection. It comes from a
+// listening socket on the host, from a Docker publish, because a
+// container's socket lives in another network namespace and never appears
+// in the host's /proc/net/tcp, or from a destination rewrite in the
+// ruleset, because a port this host forwards to another machine has
+// neither a socket nor a publish here (see forwards).
 type Endpoint struct {
-	Kind   string `json:"kind"` // socket | publish
+	Kind   string `json:"kind"` // socket | publish | forward
 	Family string `json:"family"`
 	Proto  string `json:"proto"`
 	BindIP string `json:"bind_ip"`
@@ -90,8 +92,9 @@ func Evaluate(f facts.Facts, zone Zone) []Verdict {
 	return out
 }
 
-// endpoints merges host sockets and Docker publishes, preferring the publish
-// when both describe the same host port, because the container name is the
+// endpoints merges host sockets, Docker publishes and the ports the
+// ruleset forwards elsewhere. A publish is preferred when both it and a
+// socket describe the same host port, because the container name is the
 // better attribution and docker-proxy's own socket is an implementation
 // detail.
 func endpoints(f facts.Facts) []Endpoint {
@@ -115,6 +118,27 @@ func endpoints(f facts.Facts) []Endpoint {
 				BindIP: p.HostIP, Port: p.HostPort, Owner: c.Name}
 			byKey[key(e)] = e // a publish overwrites the docker-proxy socket
 		}
+	}
+
+	// The ports the ruleset forwards to another machine, which is the one
+	// endpoint source that describes something other than this host. A
+	// port that already has a row keeps it: that endpoint's own evaluation
+	// walks the same prerouting hook and follows the same rewrite, so a
+	// second row would say the same thing twice under a different name,
+	// which is what every published port on a Docker host would otherwise
+	// get. The address is deliberately not part of that test: a rewrite
+	// and a socket on one port are the same port to a reader, whichever
+	// address either is bound to.
+	reported := map[string]bool{}
+	for _, e := range byKey {
+		reported[fmt.Sprintf("%s/%d", e.Proto, e.Port)] = true
+	}
+	fwd, _ := forwards(f)
+	for _, e := range fwd {
+		if reported[fmt.Sprintf("%s/%d", e.Proto, e.Port)] {
+			continue
+		}
+		byKey[key(e)] = e
 	}
 
 	out := make([]Endpoint, 0, len(byKey))
@@ -258,6 +282,18 @@ func evaluateAtDestination(f facts.Facts, zone Zone, ep Endpoint, family string,
 		return v
 	}
 
+	if pre.DNAT == nil && ep.Kind == forwardKind {
+		// This row exists because some rule in prerouting rewrites this
+		// port, and at this address none did: the rule is gated on an
+		// interface or an address that is not this one. Nothing is
+		// delivered locally either, since no socket here answers for a
+		// forwarded port, so the packet reaches nothing at all.
+		v.Result = "filtered"
+		v.Reason = fmt.Sprintf("via %s: nothing rewrites %d/%s here, so the rule this row came from does not forward it at this address",
+			c.IP, ep.Port, ep.Proto)
+		return v
+	}
+
 	if pre.DNAT != nil {
 		v.DNAT = pre.DNAT
 		pkt.Dst = pre.DNAT.IP
@@ -294,7 +330,15 @@ func evaluateAtDestination(f facts.Facts, zone Zone, ep Endpoint, family string,
 		}
 		res, hits := Traverse(f.Ruleset, family, hook, pkt)
 		v.Path = append(v.Path, hits...)
-		return finish(v, res, fmt.Sprintf("via %s: DNAT to %s:%d, then the %s hook", c.IP, pre.DNAT.IP, pre.DNAT.Port, hook))
+		v = finish(v, res, fmt.Sprintf("via %s: DNAT to %s:%d, then the %s hook", c.IP, pre.DNAT.IP, pre.DNAT.Port, hook))
+		if ep.Kind == forwardKind && v.Result == "reachable" && !pkt.DstIsLocal {
+			// Every other reachable verdict ends at a socket on this host.
+			// This one ends at the edge of what whyopen can see, and the
+			// difference matters: a forwarded port with nothing behind it
+			// looks exactly like this.
+			v.Reason += fmt.Sprintf("; whyopen cannot see %s, so this says the packet is forwarded there, not that anything answers", pre.DNAT.IP)
+		}
+		return v
 	}
 
 	// No DNAT: the packet is delivered locally. The caller already
