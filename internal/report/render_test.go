@@ -176,3 +176,17 @@ func TestRenderRuleShowsInvertedSetLookup(t *testing.T) {
 		t.Fatalf("RenderRule = %q, want the inverted set lookup rendered", got)
 	}
 }
+
+// An IPv6 rule rendered as raw hex is unreadable exactly where --explain
+// is meant to help: the rule that decided an IPv6 verdict.
+func TestRenderRuleShowsIPv6AddressesAsAddresses(t *testing.T) {
+	r := facts.Rule{Handle: 7, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "network", Offset: 24, Len: 16}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: "20010db8000004920000000000000010"}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	got := RenderRule(r)
+	if !strings.Contains(got, "2001:db8:0:492::10") {
+		t.Fatalf("RenderRule = %q, want the IPv6 address rendered as an address", got)
+	}
+}

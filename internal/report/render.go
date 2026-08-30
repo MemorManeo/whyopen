@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"net/netip"
 	"strings"
 
 	"github.com/MemorManeo/whyopen/internal/facts"
@@ -76,6 +77,12 @@ func unresolvedName(note string) string {
 
 func payloadName(p *facts.PayloadExpr) string {
 	switch {
+	// IPv6 first: its address offsets (8 and 24) do not collide with
+	// IPv4's, and the length is what tells the two headers apart.
+	case p.Base == "network" && p.Offset == 8 && p.Len == 16:
+		return "saddr"
+	case p.Base == "network" && p.Offset == 24 && p.Len == 16:
+		return "daddr"
 	case p.Base == "network" && p.Offset == 12:
 		return "saddr"
 	case p.Base == "network" && p.Offset == 16:
@@ -143,8 +150,11 @@ func cmpValue(field, data string) string {
 			return fmt.Sprintf("%d", binary.BigEndian.Uint16(b))
 		}
 	case "saddr", "daddr":
-		if len(b) == 4 {
-			return fmt.Sprintf("%d.%d.%d.%d", b[0], b[1], b[2], b[3])
+		// Both families, through the same parser the rest of the tool
+		// uses. An IPv6 address rendered as raw hex was unreadable
+		// exactly where --explain is meant to help.
+		if ip, ok := netip.AddrFromSlice(b); ok {
+			return ip.String()
 		}
 	case "protocol":
 		if len(b) == 1 {
