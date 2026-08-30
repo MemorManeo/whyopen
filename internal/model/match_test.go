@@ -1469,3 +1469,38 @@ func TestOtherTransportFieldsStayRefused(t *testing.T) {
 		}
 	}
 }
+
+// A meta key with no value on this path breaks the rule rather than
+// reading as zero. The distinction is the whole of decision 0013: putting
+// zero in the register would make `meta skuid 0 accept` match, and a
+// probe against a real kernel says it does not.
+func TestUnavailableMetaKeyBreaksTheRule(t *testing.T) {
+	for _, key := range []string{"skuid", "skgid"} {
+		rule := facts.Rule{Handle: 131, Exprs: []facts.Expr{
+			{Kind: facts.ExprMeta, Meta: &facts.MetaExpr{Key: key, Register: 1}},
+			{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: natHex(0)}},
+			{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+		}}
+		out, act := MatchRule(testPacket(), rule, nil)
+		if out != OutcomeNoMatch {
+			t.Errorf("%s: out = %v, want no-match: there is no socket owner on this path", key, out)
+		}
+		if act.Kind == "accept" {
+			t.Errorf("%s: the rule's verdict was applied to a rule that did not match", key)
+		}
+	}
+}
+
+// A meta key whyopen simply does not model is still a refusal. Decision
+// 0013 is about two keys whose absence was established, not a general
+// licence to treat unknown metadata as missing.
+func TestOtherUnmodelledMetaKeysStillRefuse(t *testing.T) {
+	rule := facts.Rule{Handle: 132, Exprs: []facts.Expr{
+		{Kind: facts.ExprMeta, Meta: &facts.MetaExpr{Key: "mark", Register: 1}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: natHex(0)}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule, nil); out != OutcomeUnknown {
+		t.Fatalf("out = %v, want unknown", out)
+	}
+}

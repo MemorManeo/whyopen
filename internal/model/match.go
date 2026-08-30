@@ -31,6 +31,14 @@ func MatchRule(pkt *Packet, r facts.Rule, sets []facts.Set) (Outcome, Action) {
 			regs[e.Payload.DestRegister] = b
 
 		case facts.ExprMeta:
+			// A key with no value on this path breaks the rule, which
+			// then cannot match whatever the comparison would have said.
+			// Reading it as zero instead would make `meta skuid 0 accept`
+			// match, and a probe against a real kernel says it does not
+			// (docs/decisions/0013-unavailable-meta-keys.md).
+			if metaAbsent(e.Meta.Key) {
+				return OutcomeNoMatch, act
+			}
 			b, ok := metaBytes(pkt, e.Meta.Key)
 			if !ok {
 				return OutcomeUnknown, act
@@ -317,6 +325,15 @@ func addrBytes(a netip.Addr, want int) ([]byte, bool) {
 		return nil, false
 	}
 	return b, true
+}
+
+// metaAbsent reports whether a meta key has no value at all on the hooks
+// whyopen walks, which is a different answer from one it cannot compute.
+// Only these two qualify, and only because it was established that they
+// do: the socket a packet belongs to has not been looked up when the
+// input filter hook runs, and a forwarded packet never has one.
+func metaAbsent(key string) bool {
+	return key == "skuid" || key == "skgid"
 }
 
 func metaBytes(pkt *Packet, key string) ([]byte, bool) {

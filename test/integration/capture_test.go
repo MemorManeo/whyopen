@@ -703,9 +703,9 @@ table inet srv {
 // carries every socket's uid. If it does not, the match never fires
 // inbound and whyopen could resolve it as a plain no-match.
 //
-// It asserts only that the two outcomes are told apart, and prints which
-// one happened, because either answer is a finding and neither is one to
-// guess at.
+// It began by asserting only that the two outcomes were told apart. The
+// answer settled decision 0013, and it now asserts both the kernel's
+// behaviour and whyopen agreeing with it.
 func TestCaptureSkuidOnInput(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "nft", "python3")
@@ -729,20 +729,23 @@ table inet skuidcap {
 	if len(res) != 1 {
 		t.Fatalf("probe returned %d results", len(res))
 	}
-	switch res[0].State {
-	case probe.StateOpen:
-		t.Logf("FINDING: `meta skuid 0` matched on the input path, so the socket owner is "+
-			"available there and whyopen could resolve it from facts.Socket.UID (state=%s)", res[0].State)
-	default:
-		t.Logf("FINDING: `meta skuid 0` did not match on the input path (state=%s, %s), so the "+
-			"rule never fires inbound and whyopen could resolve it as a no-match rather than refusing",
-			res[0].State, res[0].Detail)
+	// The finding, recorded in decision 0013: the match did not fire, so
+	// the port fell through to the drop policy. This began as a capture
+	// that logged whichever way it went; now that whyopen models it, the
+	// experiment is worth keeping as the assertion it became.
+	if res[0].State != probe.StateFiltered {
+		t.Fatalf("probe = %s (%s), want filtered: `meta skuid 0` should not match on the input "+
+			"path, and if it now does, decision 0013 needs revisiting", res[0].State, res[0].Detail)
 	}
 
-	// And what whyopen says today, for the record.
+	// And whyopen has to say the same thing the wire did. Agreeing with a
+	// probe on the same host is the strongest check this suite can make of
+	// a model that exists to predict exactly that.
 	v := verdictFor(evaluate(collectIn(t, ns)), 8080, "ip")
 	if v == nil {
 		t.Fatal("no verdict for 8080")
 	}
-	t.Logf("whyopen today: 8080 = %s (%s)", v.Result, v.Reason)
+	if v.Result != "filtered" {
+		t.Fatalf("whyopen says 8080 is %s (%s), but the probe found it filtered", v.Result, v.Reason)
+	}
 }

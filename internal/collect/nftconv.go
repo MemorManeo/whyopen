@@ -577,6 +577,13 @@ func cmpOpName(op expr.CmpOp) string {
 
 func metaKeyName(k expr.MetaKey) string {
 	switch k {
+	case expr.MetaKeySKUID:
+		// Decoded so the evaluator can resolve it. There is no socket
+		// owner on the paths whyopen walks, which decision 0013
+		// established by experiment rather than from documentation.
+		return "skuid"
+	case expr.MetaKeySKGID:
+		return "skgid"
 	case expr.MetaKeyIIF:
 		// The index form. Hand-written rulesets reach for `iif lo accept`
 		// far more often than for the name form, and whyopen modelled
