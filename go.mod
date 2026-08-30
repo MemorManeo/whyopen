@@ -5,6 +5,7 @@ go 1.24
 toolchain go1.24.0
 
 require (
+	github.com/goccy/go-yaml v1.19.2
 	github.com/google/nftables v0.3.0
 	golang.org/x/sys v0.28.0
 )
