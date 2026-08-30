@@ -279,15 +279,19 @@ rushed into that tag; all three were closed before v0.2.0:
 Nothing here blocked 1.0, and each is here because closing it needs
 evidence or a user rather than a decision.
 
-- **`expr.Range`.** A numeric range (`tcp dport 1024-2048`) or an
-  interval-flagged set still reports `unknown`. Decision 0004's capture
-  found no evidence one was needed, and this project does not write a
-  decoder against a layout nobody has observed. Closing it starts with a
-  capture, the way 0003 and 0004 did.
-- **`xt recent --remove`.** The three `check_set` bit patterns were
-  captured from a live kernel; the fourth was not. The pattern the other
-  three follow would put it at 0x08, and that is an inference, which is
-  why the decoder refuses rather than guesses.
+- ~~**`expr.Range`.**~~ Done in v1.1, and the capture was worth doing:
+  the guess in decision 0004 was wrong. `tcp dport 1024-2048` produces no
+  range expression at all, it compiles to two ordered comparisons, so a
+  decoder written from that guess would have closed the rare negated form
+  and left the common one open. All three shapes resolve now, recorded in
+  `docs/decisions/0011-ranges-and-interval-sets.md`. What is left there is
+  an interval reaching the top of the type's range, whose end wraps to
+  zero and is indistinguishable from the sentinel: its own capture.
+- ~~**`xt recent --remove`.**~~ Done in v1.1. Captured at 0x08, which is
+  what the pattern of the other three predicted. Decision 0003's update
+  records that the inference would have been right and that refusing it
+  was still correct: a guess that happens to be right is not evidence, and
+  there was no way to tell which kind it was without the capture.
 - **The library patch belongs upstream.** `google/nftables` drops
   `NFTA_HOOK_DEV` when it reads a chain back, which is why
   `internal/collect/chaindev.go` exists. When that lands upstream, delete
