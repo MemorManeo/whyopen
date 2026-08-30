@@ -241,8 +241,10 @@ func evaluateAtDestination(f facts.Facts, zone Zone, ep Endpoint, family string,
 		InIface: c.Iface, CtState: "new", DstIsLocal: true,
 		// Resolved once here rather than in the matcher, which stays pure
 		// over the packet: a fib presence lookup asks which device the
-		// reply would leave by.
-		SrcRouteDev: routeDevFor(f.Host.Routes, src),
+		// reply would leave by, and `meta iif` asks for an index rather
+		// than a name.
+		SrcRouteDev:  routeDevFor(f.Host.Routes, src),
+		InIfaceIndex: ifaceIndex(f, c.Iface),
 	}
 
 	pre, hits := Traverse(f.Ruleset, family, "prerouting", pkt)
@@ -288,6 +290,7 @@ func evaluateAtDestination(f facts.Facts, zone Zone, ep Endpoint, family string,
 				return v
 			}
 			pkt.OutIface = outIface
+			pkt.OutIfaceIndex = ifaceIndex(f, outIface)
 		}
 		res, hits := Traverse(f.Ruleset, family, hook, pkt)
 		v.Path = append(v.Path, hits...)
@@ -448,6 +451,21 @@ func isLocal(f facts.Facts, ip netip.Addr) bool {
 // because a rule gated on oifname would then simply fail to match and the
 // chain's policy would decide, which is indistinguishable from a genuine
 // drop.
+// ifaceIndex is the kernel index of a named interface, or zero when
+// whyopen does not have it, which the evaluator reads as "cannot say"
+// rather than as index zero.
+func ifaceIndex(f facts.Facts, name string) uint32 {
+	if name == "" {
+		return 0
+	}
+	for _, i := range f.Host.Interfaces {
+		if i.Name == name && i.Index > 0 {
+			return uint32(i.Index)
+		}
+	}
+	return 0
+}
+
 func ifaceFor(f facts.Facts, ip netip.Addr) (string, bool) {
 	for _, i := range f.Host.Interfaces {
 		if !i.Up {

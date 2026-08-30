@@ -1246,3 +1246,40 @@ func TestFibPresenceWithoutTheInterfaceKey(t *testing.T) {
 		t.Fatalf("out = %v, want no match: some route exists, which is all this shape asks", out)
 	}
 }
+
+// `iif lo accept` is in nearly every hand-written ruleset, and whyopen
+// modelled only the name form (`iifname`), so the index form poisoned
+// every verdict on such a host. The index comes from the interface the
+// packet arrived on, which whyopen already knows.
+func iifRule(index uint32) facts.Rule {
+	return facts.Rule{Handle: 91, Exprs: []facts.Expr{
+		{Kind: facts.ExprMeta, Meta: &facts.MetaExpr{Key: "iif", Register: 1}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: natHex(index)}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+}
+
+func TestMetaIifMatchesTheArrivalInterfaceIndex(t *testing.T) {
+	p := testPacket()
+	p.InIface = "eth0"
+	p.InIfaceIndex = 2
+
+	if out, act := MatchRule(p, iifRule(2), nil); out != OutcomeMatch || act.Kind != "accept" {
+		t.Fatalf("out=%v act=%+v, want a match: the packet arrived on index 2", out, act)
+	}
+	// Index 1 is lo, which this packet did not arrive on.
+	if out, _ := MatchRule(p, iifRule(1), nil); out != OutcomeNoMatch {
+		t.Fatalf("out=%v, want no match: the packet did not arrive on lo", out)
+	}
+}
+
+// An index whyopen does not have is not an index of zero. Resolving the
+// comparison against a made-up value would answer a rule on nothing.
+func TestMetaIifRefusesWhenTheIndexIsUnknown(t *testing.T) {
+	p := testPacket()
+	p.InIface = "eth0"
+	p.InIfaceIndex = 0
+	if out, _ := MatchRule(p, iifRule(2), nil); out != OutcomeUnknown {
+		t.Fatalf("out=%v, want unknown: whyopen does not know this interface's index", out)
+	}
+}

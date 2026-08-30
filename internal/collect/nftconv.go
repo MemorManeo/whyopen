@@ -577,6 +577,14 @@ func cmpOpName(op expr.CmpOp) string {
 
 func metaKeyName(k expr.MetaKey) string {
 	switch k {
+	case expr.MetaKeyIIF:
+		// The index form. Hand-written rulesets reach for `iif lo accept`
+		// far more often than for the name form, and whyopen modelled
+		// only the name, so the commonest first rule in a hand-written
+		// chain poisoned every verdict below it.
+		return "iif"
+	case expr.MetaKeyOIF:
+		return "oif"
 	case expr.MetaKeyIIFNAME:
 		return "iifname"
 	case expr.MetaKeyOIFNAME:

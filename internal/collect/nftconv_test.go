@@ -821,3 +821,17 @@ func TestConvertCtStatus(t *testing.T) {
 		t.Fatalf("expr = %+v, want a decoded ct status", got[0])
 	}
 }
+
+// The index forms of the interface meta keys, which hand-written rulesets
+// use far more often than the name forms.
+func TestConvertMetaInterfaceIndexKeys(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Meta{Key: expr.MetaKeyIIF, Register: 1},
+		&expr.Meta{Key: expr.MetaKeyOIF, Register: 1},
+	})
+	for i, want := range []string{"iif", "oif"} {
+		if got[i].Kind != facts.ExprMeta || got[i].Meta == nil || got[i].Meta.Key != want {
+			t.Errorf("expr %d = %+v, want meta %s", i, got[i], want)
+		}
+	}
+}

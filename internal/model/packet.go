@@ -38,6 +38,13 @@ type Packet struct {
 	// rather than concluding the route is missing
 	// (docs/decisions/0012-fib-and-routes.md).
 	SrcRouteDev string
+	// InIfaceIndex and OutIfaceIndex are the kernel interface indices of
+	// InIface and OutIface, which `meta iif` and `meta oif` compare
+	// against. Zero means whyopen does not know the index, which is not
+	// the same as index zero: the evaluator refuses rather than compare
+	// against a value it made up.
+	InIfaceIndex  uint32
+	OutIfaceIndex uint32
 }
 
 // Action is what a matching rule does.

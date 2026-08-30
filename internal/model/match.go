@@ -286,6 +286,10 @@ func metaBytes(pkt *Packet, key string) ([]byte, bool) {
 		return ifname(pkt.InIface), true
 	case "oifname":
 		return ifname(pkt.OutIface), true
+	case "iif":
+		return ifindex(pkt.InIfaceIndex)
+	case "oif":
+		return ifindex(pkt.OutIfaceIndex)
 	case "l4proto":
 		return []byte{protoNumber(pkt.Proto)}, true
 	case "nfproto":
@@ -295,6 +299,19 @@ func metaBytes(pkt *Packet, key string) ([]byte, bool) {
 		return []byte{10}, true // NFPROTO_IPV6
 	}
 	return nil, false
+}
+
+// ifindex is the register form of an interface index. Zero means whyopen
+// does not know it, which is refused rather than compared: index zero is
+// not a real interface, and answering a rule against it would resolve the
+// rule on a value whyopen made up.
+func ifindex(idx uint32) ([]byte, bool) {
+	if idx == 0 {
+		return nil, false
+	}
+	b := make([]byte, 4)
+	binary.NativeEndian.PutUint32(b, idx)
+	return b, true
 }
 
 func ifname(s string) []byte {

@@ -207,6 +207,15 @@ func cmpValue(field, data string) string {
 		return "present"
 	}
 
+	// An interface index is a number, and whyopen has no name to put in
+	// its place here: the renderer sees one rule, not the host.
+	if field == "iif" || field == "oif" {
+		if len(b) == 4 {
+			return fmt.Sprintf("index %d", binary.NativeEndian.Uint32(b))
+		}
+		return data
+	}
+
 	switch field {
 	case "iifname", "oifname":
 		return `"` + strings.TrimRight(string(b), "\x00") + `"`

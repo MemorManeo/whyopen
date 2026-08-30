@@ -805,6 +805,41 @@ func TestRecentRemoveResolves(t *testing.T) {
 	}
 }
 
+// `iif lo accept` is the first rule in almost every hand-written chain,
+// and whyopen modelled only the name form, so the index form left every
+// verdict on such a host unknown.
+//
+// The second rule is what makes this test able to fail for the right
+// reason. Asserting only that `iif lo` does not match would pass even if
+// the index were compared in the wrong byte order, since a packet on the
+// veth does not arrive on lo either way. Matching the interface it really
+// did arrive on is the assertion that catches that.
+func TestMetaIifResolvesAgainstTheArrivalInterface(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	listenIn(t, ns, "0.0.0.0", "8080")
+	listenIn(t, ns, "0.0.0.0", "9090")
+	applyNftRuleset(t, ns, fmt.Sprintf(`
+table inet filter {
+	chain input {
+		type filter hook input priority 0; policy drop;
+		iif "lo" accept
+		iif "%s" tcp dport 8080 accept
+	}
+}
+`, nsSideName(ns)))
+
+	vs := evaluate(collectIn(t, ns))
+	if v := verdictFor(vs, 8080, "ip"); v == nil || v.Result != "reachable" {
+		t.Fatalf("8080 = %+v, want reachable: it arrives on the interface the rule names", v)
+	}
+	if v := verdictFor(vs, 9090, "ip"); v == nil || v.Result != "filtered" {
+		t.Fatalf("9090 = %+v, want filtered: no rule accepts it", v)
+	}
+}
+
 // The census of a hand-written ruleset found nothing undecoded, which is
 // a claim about the collector and not about the answer a user gets. This
 // asks the question that matters: with the rules a hardening guide tells
