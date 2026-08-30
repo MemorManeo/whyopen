@@ -987,3 +987,57 @@ func describeExprs(exprs []facts.Expr) string {
 	}
 	return strings.Join(parts, " ")
 }
+
+// A host that forwards a port to another machine on its LAN, which is
+// what a router or a VM host does and what nothing in this suite has ever
+// modelled. Docker's publishes look like this too, but whyopen learns
+// about those from the Docker API; a hand-written DNAT has no such
+// registry behind it.
+//
+// This asserts what whyopen does today rather than what it should do,
+// because that is the thing worth finding out: whether a forwarded port
+// with nothing listening locally appears at all.
+func TestHandWrittenPortForwardIsVisible(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	// A second subnet to forward into, so the DNAT target is on a network
+	// this host knows but is not itself.
+	nsRun(t, ns, "ip", "link", "add", "lan0", "type", "dummy")
+	nsRun(t, ns, "ip", "addr", "add", "192.0.2.1/24", "dev", "lan0")
+	nsRun(t, ns, "ip", "link", "set", "lan0", "up")
+	nsRun(t, ns, "sysctl", "-qw", "net.ipv4.ip_forward=1")
+
+	applyNftRuleset(t, ns, `
+table ip nat {
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		tcp dport 8080 dnat to 192.0.2.50:80
+	}
+}
+
+table inet filter {
+	chain forward {
+		type filter hook forward priority 0; policy accept;
+	}
+
+	chain input {
+		type filter hook input priority 0; policy drop;
+	}
+}
+`)
+
+	f := collectIn(t, ns)
+	vs := evaluate(f)
+
+	v := verdictFor(vs, 8080, "ip")
+	if v == nil {
+		t.Logf("FINDING: whyopen reports nothing for 8080. It derives endpoints from listening "+
+			"sockets and Docker publishes, and a hand-written DNAT to another machine is neither, "+
+			"so a port this host forwards to its LAN is invisible. Sockets seen: %d, docker: %v",
+			len(f.Sockets), f.Docker.Available)
+		return
+	}
+	t.Logf("whyopen reports 8080 = %s (%s)", v.Result, v.Reason)
+}
