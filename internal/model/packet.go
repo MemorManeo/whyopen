@@ -20,6 +20,17 @@ type Packet struct {
 	OutIface   string
 	CtState    string
 	DstIsLocal bool
+	// DNATApplied says a rule earlier on this packet's path rewrote its
+	// destination, which is what `ct status dnat` asks about. whyopen is
+	// the thing that applied the rewrite, so this is not an assumption
+	// about conntrack: it is what happened in the traversal.
+	//
+	// It is set for the hook walked after the rewrite, not within the
+	// prerouting walk that performs it, so a `ct status dnat` rule placed
+	// after the DNAT rule in the same chain reads as not-yet-rewritten.
+	// That errs toward reporting the packet as continuing rather than as
+	// stopped, which is the safe direction for an exposure audit.
+	DNATApplied bool
 }
 
 // Action is what a matching rule does.

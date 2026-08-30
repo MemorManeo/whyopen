@@ -196,8 +196,9 @@ func convertExpr(e expr.Any) facts.Expr {
 	}
 }
 
-// convertCt decodes a native `ct` expression. Only CtKeySTATE loaded into a
-// destination register is modelled, following the posture of the recent and
+// convertCt decodes a native `ct` expression. Only the keys whyopen can
+// answer for its synthetic packet, loaded into a destination register, are
+// modelled, following the posture of the recent and
 // addrtype cases: enumerate exactly what is understood and refuse
 // everything else, rather than guess. A native ct expression carries no
 // payload bytes of its own the way an xt extension does, so there is
@@ -207,11 +208,25 @@ func convertExpr(e expr.Any) facts.Expr {
 // verdict becomes unknown instead of silently ignoring what the key
 // actually constrains.
 func convertCt(v *expr.Ct) facts.Expr {
-	if v.Key != expr.CtKeySTATE || v.SourceRegister {
+	if v.SourceRegister {
+		return facts.Expr{Kind: facts.ExprUnknown, Note: fmt.Sprintf("%T", v)}
+	}
+	var key string
+	switch v.Key {
+	case expr.CtKeySTATE:
+		key = "state"
+	case expr.CtKeySTATUS:
+		// A real firewalld emits `ct status dnat accept`, which decision
+		// 0004's hand-written ruleset never produced. whyopen can answer
+		// it: it is the thing that decides whether the packet was
+		// rewritten. See ctBytes in internal/model/match.go for which
+		// status bits are determinate and why.
+		key = "status"
+	default:
 		return facts.Expr{Kind: facts.ExprUnknown, Note: fmt.Sprintf("%T", v)}
 	}
 	return facts.Expr{Kind: facts.ExprCt, Ct: &facts.CtExpr{
-		Key:      "state",
+		Key:      key,
 		Register: v.Register,
 	}}
 }

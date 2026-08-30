@@ -427,11 +427,14 @@ func TestConvertCtState(t *testing.T) {
 	}
 }
 
-// Any CtKey other than STATE constrains something whyopen does not model
-// (docs/decisions/0004 only exercised STATE), so it must stay unknown
-// rather than being wrapped as though it were understood.
+// Any CtKey other than the two whyopen can answer for its synthetic
+// packet constrains something it does not model, so it must stay unknown
+// rather than being wrapped as though it were understood. STATUS left this
+// list in v1.2: a real firewalld emits `ct status dnat`, and whyopen is
+// the thing that decides whether the packet was DNAT'd, so it can answer
+// that one exactly.
 func TestConvertCtUnmodelledKeyStaysUnknown(t *testing.T) {
-	for _, key := range []expr.CtKey{expr.CtKeyMARK, expr.CtKeySTATUS, expr.CtKeyDIRECTION} {
+	for _, key := range []expr.CtKey{expr.CtKeyMARK, expr.CtKeyPROTOCOL, expr.CtKeyDIRECTION} {
 		got := ConvertExprs([]expr.Any{&expr.Ct{Register: 1, Key: key}})
 		if got[0].Kind != facts.ExprUnknown || got[0].Note != "*expr.Ct" {
 			t.Fatalf("key %v = %+v, want unknown noting *expr.Ct", key, got[0])
@@ -805,5 +808,16 @@ func TestRecentRemoveDecodes(t *testing.T) {
 	}
 	if x.Recent.Name != "SSH" {
 		t.Errorf("name = %q, want SSH", x.Recent.Name)
+	}
+}
+
+// A real firewalld emits `ct status dnat accept`, which decision 0004's
+// hand-written ruleset never produced. Only the two keys whyopen can
+// answer for its synthetic packet are decoded; every other one still
+// refuses.
+func TestConvertCtStatus(t *testing.T) {
+	got := ConvertExprs([]expr.Any{&expr.Ct{Key: expr.CtKeySTATUS, Register: 1}})
+	if got[0].Kind != facts.ExprCt || got[0].Ct == nil || got[0].Ct.Key != "status" {
+		t.Fatalf("expr = %+v, want a decoded ct status", got[0])
 	}
 }

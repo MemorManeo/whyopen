@@ -119,11 +119,14 @@ If you find one, it is the most serious kind of bug this tool can have.
   that have been registered, which happens as soon as anything loads the
   module, and whyopen cannot tell from `/proc` which of them carry rules.
   firewalld's own zone configuration is not read, but the nftables ruleset
-  its backend writes is: the expressions such a ruleset emits were
-  captured and are decoded (see
-  [decision 0004](docs/decisions/0004-firewalld-expressions.md)), though
-  whyopen has been tested against a firewalld-shaped ruleset applied by
-  hand, not against the daemon itself.
+  its backend writes is, and CI runs whyopen against a real running
+  firewalld: one job installs the daemon, asserts that every native
+  expression it emits decodes, and checks that a port `firewall-cmd` was
+  told to open reports `reachable` while one it was not reports
+  `filtered`. The one construct still undecoded there is firewalld's IPv6
+  reverse-path check (`fib saddr . mark . iif oif missing`), which depends
+  on the host's routing table; whyopen does not collect routes, so IPv6
+  verdicts on such a host report `unknown`.
 - Must run as **root** (or at least with `CAP_NET_ADMIN`) to list the
   ruleset over netlink and to attribute every listening socket to a
   process. Run unprivileged and whyopen still lists every listener it can

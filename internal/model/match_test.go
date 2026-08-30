@@ -1042,3 +1042,58 @@ func TestFlatSetStillMatchesExactly(t *testing.T) {
 		}
 	}
 }
+
+// IPS_DST_NAT, bit 5 of the kernel's ip_conntrack_status enum.
+const ctStatusDstNat = 0x20
+
+// `ct status dnat accept` is what a real firewalld emits in both
+// filter_INPUT and filter_FORWARD, and it made every port on such a host
+// unknown. whyopen can answer it exactly, because it is the one deciding
+// whether this packet was DNAT'd: it applied the rewrite itself.
+func ctStatusRule(bit uint32) facts.Rule {
+	return facts.Rule{Handle: 61, Exprs: []facts.Expr{
+		{Kind: facts.ExprCt, Ct: &facts.CtExpr{Key: "status", Register: 1}},
+		{Kind: facts.ExprBitwise, Bitwise: &facts.BitwiseExpr{SourceRegister: 1, DestRegister: 1, Len: 4,
+			Mask: natHex(bit), Xor: natHex(0)}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "neq", Register: 1, Data: natHex(0)}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+}
+
+func TestCtStatusDnatMatchesOnlyARewrittenPacket(t *testing.T) {
+	rewritten := testPacket()
+	rewritten.DNATApplied = true
+	if out, act := MatchRule(rewritten, ctStatusRule(ctStatusDstNat), nil); out != OutcomeMatch || act.Kind != "accept" {
+		t.Fatalf("out=%v act=%+v, want a match: this packet was DNAT'd", out, act)
+	}
+
+	if out, _ := MatchRule(testPacket(), ctStatusRule(ctStatusDstNat), nil); out != OutcomeNoMatch {
+		t.Fatalf("out=%v, want no match: nothing rewrote this packet", out)
+	}
+}
+
+// Every other status bit is determinate for whyopen's packet and clear:
+// it is the first packet of a connection, so nothing has been confirmed,
+// replied to or expected. A rule asking about one of those resolves to
+// "not set" rather than poisoning the verdict.
+func TestCtStatusOtherBitsAreClear(t *testing.T) {
+	const ctStatusAssured = 0x4
+	p := testPacket()
+	p.DNATApplied = true
+	if out, _ := MatchRule(p, ctStatusRule(ctStatusAssured), nil); out != OutcomeNoMatch {
+		t.Fatalf("out=%v, want no match: a first packet is not assured", out)
+	}
+}
+
+// A ct key whyopen does not model still refuses, which is the posture the
+// status key just joined rather than replaced.
+func TestUnmodelledCtKeyStillRefuses(t *testing.T) {
+	rule := facts.Rule{Handle: 62, Exprs: []facts.Expr{
+		{Kind: facts.ExprCt, Ct: &facts.CtExpr{Key: "mark", Register: 1}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: natHex(1)}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule, nil); out != OutcomeUnknown {
+		t.Fatalf("out=%v, want unknown for a ct key whyopen does not model", out)
+	}
+}

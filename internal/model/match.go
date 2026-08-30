@@ -330,14 +330,43 @@ const ctStateNewBit uint32 = 0x8
 // encoding the value the same way here is what makes the existing
 // Bitwise/Cmp machinery, written to resolve whatever mask and comparison
 // value a real kernel produced, resolve correctly against it.
+// ctBytes builds the register contents a native ct expression loads, for
+// the two keys whyopen can answer for its synthetic packet.
+//
+// "state" is always new: whyopen asks whether a fresh inbound connection
+// can be established.
+//
+// "status" is determinate for the same reason. This is the first packet of
+// that connection, so it has not been confirmed, replied to, assured or
+// expected, and it has not been source-NATed, which happens in postrouting
+// after every hook whyopen walks. The one bit that can be set is IPS_DST_NAT,
+// and whyopen knows it exactly because it is the thing that applied the
+// rewrite. A real firewalld emits `ct status dnat accept` in both
+// filter_INPUT and filter_FORWARD, and without this every port on such a
+// host reported unknown.
 func ctBytes(pkt *Packet, key string) ([]byte, bool) {
-	if key != "state" || pkt.CtState != "new" {
+	b := make([]byte, 4)
+	switch key {
+	case "state":
+		if pkt.CtState != "new" {
+			return nil, false
+		}
+		binary.NativeEndian.PutUint32(b, ctStateNewBit)
+	case "status":
+		var status uint32
+		if pkt.DNATApplied {
+			status |= ctStatusDstNatBit
+		}
+		binary.NativeEndian.PutUint32(b, status)
+	default:
 		return nil, false
 	}
-	b := make([]byte, 4)
-	binary.NativeEndian.PutUint32(b, ctStateNewBit)
 	return b, true
 }
+
+// ctStatusDstNatBit is IPS_DST_NAT, bit 5 of the kernel's
+// ip_conntrack_status enum: the connection's destination was rewritten.
+const ctStatusDstNatBit = 0x20
 
 // lookupMatch resolves a Lookup as a flat membership test: does reg, the
 // current value of the register the Lookup reads, equal one of the named

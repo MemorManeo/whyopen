@@ -257,6 +257,9 @@ func evaluateAtDestination(f facts.Facts, zone Zone, ep Endpoint, family string,
 		pkt.Dst = pre.DNAT.IP
 		pkt.DstPort = pre.DNAT.Port
 		pkt.DstIsLocal = isLocal(f, pre.DNAT.IP)
+		// From here on the packet has been rewritten, which is what
+		// `ct status dnat` asks about in the hooks below.
+		pkt.DNATApplied = true
 
 		hook := "forward"
 		if pkt.DstIsLocal {
