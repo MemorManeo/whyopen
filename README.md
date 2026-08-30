@@ -58,12 +58,25 @@ hand," not "this is fine."
 
 Known gaps that produce `unknown` today:
 
-- Native nftables expressions whyopen has no decoder for. It decodes the
-  shapes UFW and Docker emit, which reach the kernel through iptables-nft;
-  a hand-written nft ruleset or a firewalld host uses native ones instead.
-  Native `ct state`, anonymous set lookups (`tcp dport { 22, 80 }`) and
-  ranges are all undecoded today, so on such a host a rule as ordinary as
-  `ct state established,related accept` makes every port report `unknown`.
+- Native nftables expressions whyopen has no decoder for. UFW and Docker
+  reach the kernel through iptables-nft, so their rules arrive as
+  compatibility expressions; a hand-written nft ruleset or a firewalld
+  host uses native ones instead, and only some of those decode. `ct state`
+  and set lookups do, in every shape a captured firewalld-style ruleset
+  produced: `ct state established,related accept` and `ct state
+  { established, related } accept` compile to two different netlink shapes
+  and both resolve, as do an anonymous set (`tcp dport { 22, 80 }`) and a
+  named one (`tcp dport @allowed`). What still reports `unknown` there is a
+  numeric range (`tcp dport 1024-2048`) or an interval-flagged set,
+  undecoded because no captured ruleset has yet shown one; and,
+  deliberately, a set whyopen will not read as a flat membership test: a
+  map or verdict map, a concatenated key type, or a set whose elements the
+  facts document does not carry.
+- The `xt recent` extension decodes only the three `check_set` bit
+  patterns captured from a live kernel, which is what `ufw limit ssh`
+  emits. A `--remove` rule was never captured, so it still reports
+  `unknown` rather than being guessed at from the pattern the other three
+  follow.
 
 One known gap points the other way, reporting `filtered` where the port may
 be open: whyopen reads only the global forwarding toggles
@@ -79,7 +92,12 @@ leaves those off but enables forwarding on one interface
   nftables; it detects their presence (a non-empty `/proc/net/ip_tables_names`
   or `/proc/net/ip6_tables_names`, which only the legacy kernel modules
   create) and prints a warning saying every verdict may be incomplete.
-  firewalld is not modelled either.
+  firewalld's own zone configuration is not read, but the nftables ruleset
+  its backend writes is: the expressions such a ruleset emits were
+  captured and are decoded (see
+  [decision 0004](docs/decisions/0004-firewalld-expressions.md)), though
+  whyopen has been tested against a firewalld-shaped ruleset applied by
+  hand, not against the daemon itself.
 - Must run as **root** (or at least with `CAP_NET_ADMIN`) to list the
   ruleset over netlink and to attribute every listening socket to a
   process. Run unprivileged and whyopen still lists every listener it can
@@ -105,7 +123,7 @@ go install github.com/MemorManeo/whyopen/cmd/whyopen@latest
 ```
 
 Either way, `whyopen` needs root (or `CAP_NET_ADMIN`) to read the nftables
-ruleset; see Requirements below.
+ruleset; see Requirements above.
 
 ## Usage
 
