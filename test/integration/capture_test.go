@@ -323,3 +323,136 @@ func logExprCounts(t *testing.T, label string, counts map[string]int) {
 		t.Logf("%s: %s x%d", label, k, counts[k])
 	}
 }
+
+// TestCaptureRanges is a capture, not an assertion. `tcp dport 1024-2048`
+// is the last ordinary construct whyopen reports unknown, and decision
+// 0004's firewalld capture never produced one because nothing in that
+// ruleset wrote a range. This writes several deliberately and prints what
+// google/nftables returns for each, so the decoder is written against what
+// the kernel actually stores rather than against what the header implies.
+//
+// It asserts only that a range reaches whyopen at all: if the library
+// dropped it the way it drops expressions it cannot name, no decoder is
+// possible and that is the finding.
+func TestCaptureRanges(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft")
+
+	ns := newNetns(t)
+	applyNftRuleset(t, ns, `
+table inet cap {
+	set ports_interval {
+		type inet_service
+		flags interval
+		elements = { 100-200, 8080 }
+	}
+
+	chain input {
+		type filter hook input priority 0; policy accept;
+		tcp dport 1024-2048 accept
+		tcp dport != 3000-4000 accept
+		tcp dport @ports_interval accept
+		tcp dport { 5000-5100, 6000 } accept
+	}
+}
+`)
+
+	inNetns(t, ns, func() {
+		conn, err := nftables.New()
+		if err != nil {
+			t.Fatalf("netlink: %v", err)
+		}
+		tables, err := conn.ListTables()
+		if err != nil {
+			t.Fatalf("list tables: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "cap" {
+				continue
+			}
+			// The sets first: an interval set's elements are how a range
+			// is stored when it is a set member, and whether the kernel
+			// hands back a key with an end or two elements with a flag is
+			// exactly what cannot be guessed.
+			sets, err := conn.GetSets(tbl)
+			if err != nil {
+				t.Fatalf("get sets: %v", err)
+			}
+			for _, s := range sets {
+				t.Logf("set %q anon=%v interval=%v ismap=%v keytype=%s/%d bytes",
+					s.Name, s.Anonymous, s.Interval, s.IsMap, s.KeyType.Name, s.KeyType.Bytes)
+				elems, err := conn.GetSetElements(s)
+				if err != nil {
+					t.Logf("  elements: %v", err)
+					continue
+				}
+				for i, e := range elems {
+					t.Logf("  elem[%d] key=%s keyend=%s intervalend=%v val=%s",
+						i, hex.EncodeToString(e.Key), hex.EncodeToString(e.KeyEnd), e.IntervalEnd, hex.EncodeToString(e.Val))
+				}
+			}
+
+			chains, err := conn.ListChainsOfTableFamily(tbl.Family)
+			if err != nil {
+				t.Fatalf("list chains: %v", err)
+			}
+			for _, ch := range chains {
+				if ch.Table.Name != tbl.Name {
+					continue
+				}
+				rules, err := conn.GetRules(tbl, ch)
+				if err != nil {
+					t.Fatalf("get rules: %v", err)
+				}
+				sawRange := false
+				for _, r := range rules {
+					var types []string
+					for _, e := range r.Exprs {
+						types = append(types, fmt.Sprintf("%T", e))
+						if rng, ok := e.(*expr.Range); ok {
+							sawRange = true
+							t.Logf("rule %d: expr.Range op=%d register=%d from=%s to=%s",
+								r.Handle, rng.Op, rng.Register,
+								hex.EncodeToString(rng.FromData), hex.EncodeToString(rng.ToData))
+						}
+						if lk, ok := e.(*expr.Lookup); ok {
+							t.Logf("rule %d: expr.Lookup set=%q id=%d invert=%v",
+								r.Handle, lk.SetName, lk.SetID, lk.Invert)
+						}
+					}
+					t.Logf("rule %d exprs: %v", r.Handle, types)
+				}
+				if !sawRange {
+					t.Error("no *expr.Range in any rule: either the kernel compiled these ranges " +
+						"to something else, or the library dropped them before whyopen could see them")
+				}
+			}
+		}
+	})
+}
+
+// TestCaptureRecentRemove captures the one xt recent check_set bit pattern
+// decision 0003 could not: --remove. The other three were captured from a
+// live kernel and the fourth was left undecoded rather than inferred from
+// the pattern they follow, which is why a --remove rule still reports
+// unknown. This is the capture that closes it.
+func TestCaptureRecentRemove(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "iptables")
+
+	ns := newNetns(t)
+	nsRun(t, ns, "iptables", "-A", "INPUT", "-p", "tcp", "--dport", "22",
+		"-m", "recent", "--remove", "--name", "SSH")
+	// A second variant, so the capture shows which bits are the mode and
+	// which are the name, rather than one payload with nothing to compare.
+	nsRun(t, ns, "iptables", "-A", "INPUT", "-p", "tcp", "--dport", "23",
+		"-m", "recent", "--remove", "--name", "OTHER")
+
+	payloads := captureXtPayloads(t, ns, "recent")
+	if len(payloads) < 2 {
+		t.Fatalf("expected 2 recent matches, got %d", len(payloads))
+	}
+	for i, p := range payloads {
+		t.Logf("recent-remove[%d] rev=%d len=%d hex=%s", i, p.rev, len(p.info), hex.EncodeToString(p.info))
+	}
+}
