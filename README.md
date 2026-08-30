@@ -128,9 +128,11 @@ ruleset; see Requirements above.
 ## Usage
 
 ```
-whyopen collect [-o FILE]                     snapshot this host into a facts document
-whyopen check [-facts FILE] [-explain PORT]    report what is reachable, and why
-whyopen version                               print the build version
+whyopen collect [-o FILE]                      snapshot this host into a facts document
+whyopen check [-facts FILE] [-explain PORT] [-policy FILE]
+                                               report what is reachable, and why
+whyopen policy init [-o FILE] [-facts FILE]    write a policy from what is reachable now
+whyopen version                                print the build version
 ```
 
 `whyopen collect` writes a portable JSON snapshot (a "facts document") of
@@ -143,6 +145,56 @@ or replay a bug report, without re-collecting.
 `whyopen check -explain PORT` prints the full rule path for one port: every
 base chain hit, in traversal order, with the handle and an nft-like
 rendering of each rule.
+
+### Guardrail: the policy file
+
+`whyopen check --policy whyopen.yaml` turns the report into a pass or a
+fail that cron and CI can act on. The file says which ports may be
+reachable from the internet:
+
+```yaml
+version: 1
+zones:
+  internet:
+    allow:
+      - 22/tcp
+      - 443/tcp
+fail_on_unknown: true
+```
+
+| exit | meaning |
+|---|---|
+| 0 | every reachable port is allowed |
+| 1 | a violation: something reachable the policy does not allow |
+| 2 | `unknown` verdicts, and `fail_on_unknown` is set |
+| 3 | tool error: unreadable ruleset, missing privilege, unreadable policy, bad arguments |
+
+A run with both a violation and an unknown exits 1, because a violation
+is something whyopen concluded and an unknown is something it could not.
+An entry carries no address family, so `443/tcp` allows the port over
+IPv4 and IPv6 alike, and it is per protocol: allowing `22/tcp` says
+nothing about `22/udp`. Anything allowed but not reachable is reported as
+a stale expectation and never fails the run, since the host is not less
+safe than the policy asked for.
+
+There is no implicit discovery. Without `--policy` no policy is consulted
+and `check` behaves exactly as it did before, and whyopen never picks up
+a file from the working directory: the file that decides whether your run
+passes should not depend on where you were standing. Anything in it
+whyopen does not understand, an unknown key, another zone name, a port
+range, a version other than 1, is an error that exits 3 rather than a
+line quietly ignored into a false green.
+
+`whyopen policy init` writes the file from what is reachable right now,
+so adopting it is one command and an edit. It prints to stdout, takes
+`-o FILE` to write one, and refuses to overwrite an existing file,
+because a policy carries edits that a facts document does not. It never
+seeds a port whyopen could not resolve into the allow list, and names
+those in a comment instead: an allow list is for ports you decided to
+open, not for ports nobody could account for. The file it generates sets
+`fail_on_unknown: true`, so on a host with unresolved ports the next
+`check --policy` exits 2. That is deliberate. A guardrail that ignores
+what it cannot see is a false green.
 
 ### Redact before you share
 
