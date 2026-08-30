@@ -558,3 +558,68 @@ table inet cap2 {
 		}
 	})
 }
+
+// TestCaptureFib captures firewalld's reverse-path check, the one
+// construct a running daemon emits that whyopen cannot decode. It makes
+// every IPv6 verdict on such a host unknown, so it is the largest
+// user-visible gap left, and closing it starts here: what the expression
+// carries, and what the rule around it does with the result.
+//
+// Both the rule firewalld writes and the plainer `fib daddr type local`
+// shape are applied, because the second is what the addrtype match
+// whyopen already decodes compiles to natively, and knowing whether they
+// arrive the same way decides how much of this is one decoder.
+func TestCaptureFib(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft")
+
+	ns := newNetns(t)
+	applyNftRuleset(t, ns, `
+table inet cap3 {
+	chain prerouting {
+		type filter hook prerouting priority -300; policy accept;
+		meta nfproto ipv6 fib saddr . mark . iif oif missing drop
+		fib daddr type local accept
+		fib saddr oif missing drop
+	}
+}
+`)
+
+	inNetns(t, ns, func() {
+		conn, err := nftables.New()
+		if err != nil {
+			t.Fatalf("netlink: %v", err)
+		}
+		tables, err := conn.ListTables()
+		if err != nil {
+			t.Fatalf("list tables: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "cap3" {
+				continue
+			}
+			chains, _ := conn.ListChainsOfTableFamily(tbl.Family)
+			for _, ch := range chains {
+				if ch.Table.Name != tbl.Name {
+					continue
+				}
+				rules, _ := conn.GetRules(tbl, ch)
+				for _, r := range rules {
+					var types []string
+					for _, e := range r.Exprs {
+						types = append(types, fmt.Sprintf("%T", e))
+						switch v := e.(type) {
+						case *expr.Fib:
+							t.Logf("rule %d: fib register=%d oif=%v oifname=%v addrtype=%v saddr=%v daddr=%v mark=%v iif=%v oifflag=%v present=%v",
+								r.Handle, v.Register, v.ResultOIF, v.ResultOIFNAME, v.ResultADDRTYPE,
+								v.FlagSADDR, v.FlagDADDR, v.FlagMARK, v.FlagIIF, v.FlagOIF, v.FlagPRESENT)
+						case *expr.Cmp:
+							t.Logf("rule %d: cmp op=%d register=%d data=%s", r.Handle, v.Op, v.Register, hex.EncodeToString(v.Data))
+						}
+					}
+					t.Logf("rule %d exprs: %v", r.Handle, types)
+				}
+			}
+		}
+	})
+}
