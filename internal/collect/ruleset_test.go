@@ -149,7 +149,7 @@ func twoTableFixture() *fakeNFT {
 }
 
 func TestReadRulesetCompleteReadIsNotMarkedFailed(t *testing.T) {
-	rs, warns, err := readRuleset(twoTableFixture())
+	rs, warns, err := readRuleset(twoTableFixture(), nil)
 	if err != nil {
 		t.Fatalf("readRuleset: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestReadRulesetPartialGetRulesFailureMarksIncomplete(t *testing.T) {
 	f := twoTableFixture()
 	f.rulesErr = map[string]error{"filter/FORWARD": errors.New("no such file or directory")}
 
-	rs, warns, err := readRuleset(f)
+	rs, warns, err := readRuleset(f, nil)
 	if err != nil {
 		t.Fatalf("readRuleset returned a hard error on a partial failure: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestReadRulesetPartialListChainsFailureMarksIncomplete(t *testing.T) {
 	f := twoTableFixture()
 	f.chainsErr = map[nftables.TableFamily]error{nftables.TableFamilyIPv4: errors.New("permission denied")}
 
-	rs, _, err := readRuleset(f)
+	rs, _, err := readRuleset(f, nil)
 	if err != nil {
 		t.Fatalf("readRuleset returned a hard error on a partial failure: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestReadRulesetPartialListChainsFailureMarksIncomplete(t *testing.T) {
 // table refetches the same list up to five times on a UFW plus Docker host.
 func TestReadRulesetListsChainsOncePerFamily(t *testing.T) {
 	f := twoTableFixture()
-	if _, _, err := readRuleset(f); err != nil {
+	if _, _, err := readRuleset(f, nil); err != nil {
 		t.Fatalf("readRuleset: %v", err)
 	}
 	if f.chainCalls != 1 {
@@ -230,7 +230,7 @@ func TestReadRulesetCarriesSetsAndElements(t *testing.T) {
 		"filter/zone_public_ports": {{Key: []byte{0, 22}}, {Key: []byte{0x1f, 0x90}}},
 	}
 
-	rs, warns, err := readRuleset(f)
+	rs, warns, err := readRuleset(f, nil)
 	if err != nil {
 		t.Fatalf("readRuleset: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestReadRulesetSetsFailureMarksIncompleteButChainsStillRead(t *testing.T) {
 	f := twoTableFixture()
 	f.setsErr = map[string]error{"filter": errors.New("permission denied")}
 
-	rs, warns, err := readRuleset(f)
+	rs, warns, err := readRuleset(f, nil)
 	if err != nil {
 		t.Fatalf("readRuleset returned a hard error on a partial failure: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestReadRulesetSetElementsFailureOmitsOnlyThatSet(t *testing.T) {
 		"filter/ok": {{Key: []byte{6}}},
 	}
 
-	rs, warns, err := readRuleset(f)
+	rs, warns, err := readRuleset(f, nil)
 	if err != nil {
 		t.Fatalf("readRuleset returned a hard error on a partial failure: %v", err)
 	}
@@ -429,13 +429,16 @@ func TestReadRulesetKeepsNetdevTables(t *testing.T) {
 		tables: []*nftables.Table{guard},
 		chains: map[nftables.TableFamily][]*nftables.Chain{
 			nftables.TableFamilyNetdev: {{
-				Name: "ingress-guard", Table: guard, Device: "eth0",
+				Name: "ingress-guard", Table: guard,
 				Hooknum: nftables.ChainHookIngress, Policy: &dropPolicy,
 			}},
 		},
 	}
 
-	rs, _, err := readRuleset(f)
+	devs := map[chainKey][]string{
+		{Family: uint8(nftables.TableFamilyNetdev), Table: "guard", Chain: "ingress-guard"}: {"eth0"},
+	}
+	rs, _, err := readRuleset(f, devs)
 	if err != nil {
 		t.Fatalf("readRuleset: %v", err)
 	}
@@ -443,8 +446,36 @@ func TestReadRulesetKeepsNetdevTables(t *testing.T) {
 		t.Fatalf("tables = %+v, want the netdev table kept", rs.Tables)
 	}
 	ch := rs.Tables[0].Chains[0]
-	if ch.Hook != "ingress" || ch.Device != "eth0" {
-		t.Fatalf("chain = %+v, want the ingress hook on eth0", ch)
+	if ch.Hook != "ingress" {
+		t.Fatalf("chain = %+v, want the ingress hook", ch)
+	}
+	// The devices come from the separate netlink read, correlated by
+	// family, table and chain name, since the library never carries them.
+	if len(ch.Devices) != 1 || ch.Devices[0] != "eth0" {
+		t.Fatalf("devices = %v, want [eth0] from the chain device read", ch.Devices)
+	}
+}
+
+// A chain the device read knows nothing about carries no devices, which
+// the evaluator reads as "could see anything" rather than "sees nothing".
+func TestReadRulesetLeavesDevicesEmptyWhenTheReadFoundNone(t *testing.T) {
+	dropPolicy := nftables.ChainPolicyDrop
+	guard := &nftables.Table{Family: nftables.TableFamilyNetdev, Name: "guard"}
+	f := &fakeNFT{
+		tables: []*nftables.Table{guard},
+		chains: map[nftables.TableFamily][]*nftables.Chain{
+			nftables.TableFamilyNetdev: {{
+				Name: "ingress-guard", Table: guard,
+				Hooknum: nftables.ChainHookIngress, Policy: &dropPolicy,
+			}},
+		},
+	}
+	rs, _, err := readRuleset(f, nil)
+	if err != nil {
+		t.Fatalf("readRuleset: %v", err)
+	}
+	if len(rs.Tables[0].Chains[0].Devices) != 0 {
+		t.Fatalf("devices = %v, want none", rs.Tables[0].Chains[0].Devices)
 	}
 }
 
@@ -456,7 +487,7 @@ func TestReadRulesetStillSkipsArpAndBridge(t *testing.T) {
 	br := &nftables.Table{Family: nftables.TableFamilyBridge, Name: "brfilter"}
 	f := &fakeNFT{tables: []*nftables.Table{arp, br}}
 
-	rs, _, err := readRuleset(f)
+	rs, _, err := readRuleset(f, nil)
 	if err != nil {
 		t.Fatalf("readRuleset: %v", err)
 	}

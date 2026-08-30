@@ -37,7 +37,14 @@ func Ruleset() (facts.Ruleset, []facts.Warning, error) {
 	if err != nil {
 		return facts.Ruleset{ReadFailed: true}, nil, fmt.Errorf("open netlink: %w", err)
 	}
-	return readRuleset(c)
+	// The hook devices come from a netlink read of whyopen's own, because
+	// the library drops the attribute (decision 0006). Its failure is not
+	// the ruleset's failure: without it an ingress chain is treated as
+	// seeing every packet, which is what whyopen did before it could read
+	// them at all.
+	devs, devWarns := ChainDevices()
+	rs, warns, err := readRuleset(c, devs)
+	return rs, append(devWarns, warns...), err
 }
 
 // readRuleset walks a source and reports what it managed to read. Any
@@ -47,7 +54,7 @@ func Ruleset() (facts.Ruleset, []facts.Warning, error) {
 // and a confident "reachable". A chain removed by Docker between the list
 // call and the GetRules call is an ordinary live-host race, not an exotic
 // failure.
-func readRuleset(c rulesetSource) (facts.Ruleset, []facts.Warning, error) {
+func readRuleset(c rulesetSource, devices map[chainKey][]string) (facts.Ruleset, []facts.Warning, error) {
 	var warns []facts.Warning
 
 	tables, err := c.ListTables()
@@ -108,11 +115,11 @@ func readRuleset(c rulesetSource) (facts.Ruleset, []facts.Warning, error) {
 				continue
 			}
 			fc := facts.Chain{
-				Name:   ch.Name,
-				Base:   ch.Hooknum != nil,
-				Hook:   HookName(ch.Hooknum, t.Family),
-				Device: ch.Device,
-				Policy: PolicyName(ch.Policy),
+				Name:    ch.Name,
+				Base:    ch.Hooknum != nil,
+				Hook:    HookName(ch.Hooknum, t.Family),
+				Devices: devices[chainKey{Family: uint8(t.Family), Table: t.Name, Chain: ch.Name}],
+				Policy:  PolicyName(ch.Policy),
 			}
 			if ch.Priority != nil {
 				fc.Priority = int32(*ch.Priority)

@@ -77,14 +77,14 @@ Known gaps that produce `unknown` today:
   facts document does not carry.
 - A base chain on the **ingress** hook. It runs before prerouting, sees
   raw frames rather than the IP-level context whyopen evaluates in, and
-  can drop a packet before any rule whyopen walks, so whyopen refuses to
-  conclude anything while one exists. The hook is per device and whyopen
-  narrows to that device when it knows it, but a chain read from a live
-  kernel never carries one: the nftables library drops that attribute, so
-  in practice one ingress chain anywhere makes every port on the host
-  report `unknown`. Blunt, and the safe direction. The egress hook is not
-  treated this way: it acts on the reply, which this model does not
-  follow, the same reason the output hook is never walked.
+  can drop a packet before any rule whyopen walks, so a port whose traffic
+  arrives on one of that chain's devices reports `unknown`. The hook is
+  per device and whyopen reads which devices, so a chain on another
+  interface leaves your other ports alone. If it cannot read them, it
+  falls back to treating the chain as seeing everything and says so in
+  the reason. The egress hook is not treated this way: it acts on the
+  reply, which this model does not follow, the same reason the output
+  hook is never walked.
 - The `xt recent` extension decodes only the three `check_set` bit
   patterns captured from a live kernel, which is what `ufw limit ssh`
   emits. A `--remove` rule was never captured, so it still reports

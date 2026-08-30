@@ -3,6 +3,7 @@ package model
 import (
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/MemorManeo/whyopen/internal/facts"
 )
@@ -40,11 +41,12 @@ type Hit struct {
 // which is what keeps one ingress chain from making every port on the host
 // unknown. A chain naming no device is treated as seeing everything.
 //
-// Today a chain collected from a live kernel never names one: the nftables
-// library drops NFTA_HOOK_DEV when it reads a chain back, so Device is
-// empty and any ingress chain does make every verdict on the host unknown.
-// That is the safe direction, and it is the narrow branch below that is
-// waiting on the collector, not this rule.
+// The devices come from a netlink request whyopen issues itself, because
+// the nftables library drops the attribute when it reads a chain back
+// (docs/decisions/0006-reading-chain-devices.md). When that read does not
+// happen, the chain carries no devices and is treated as seeing every
+// packet, which is what whyopen did for every ingress chain before it
+// could read them at all.
 //
 // The egress hook is deliberately not treated this way. It acts on the
 // reply, and this model is about whether the inbound packet reaches the
@@ -55,12 +57,12 @@ func ingressUnmodelled(rs facts.Ruleset, pkt *Packet) (Result, bool) {
 			if !ch.Base || ch.Hook != "ingress" {
 				continue
 			}
-			if ch.Device != "" && pkt.InIface != "" && ch.Device != pkt.InIface {
+			if !chainSeesIface(ch.Devices, pkt.InIface) {
 				continue
 			}
-			where := "on device " + ch.Device
-			if ch.Device == "" {
-				where = "on every device"
+			where := "on device " + strings.Join(ch.Devices, ", ")
+			if len(ch.Devices) == 0 {
+				where = "on a device whyopen could not read, so it is treated as every device"
 			}
 			return Result{Kind: "unknown", Reason: "base chain " + t.Name + "/" + ch.Name +
 				" is on the ingress hook (" + where + "), which whyopen does not model: it runs before" +
@@ -68,6 +70,22 @@ func ingressUnmodelled(rs facts.Ruleset, pkt *Packet) (Result, bool) {
 		}
 	}
 	return Result{}, false
+}
+
+// chainSeesIface reports whether a per-device hook could see a packet
+// arriving on iface. A chain with no devices recorded is one whyopen
+// could not read the devices of, and it is read as seeing everything:
+// the conservative direction, and the only honest one.
+func chainSeesIface(devices []string, iface string) bool {
+	if len(devices) == 0 || iface == "" {
+		return true
+	}
+	for _, d := range devices {
+		if d == iface {
+			return true
+		}
+	}
+	return false
 }
 
 // knownHooks are the five netfilter hooks whyopen can place a base chain on.

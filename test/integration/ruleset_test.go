@@ -497,18 +497,12 @@ table netdev guard {
 }
 
 // The hook is per device, so a chain on lo cannot see a packet arriving on
-// the veth, and whyopen should leave that verdict alone. It does not, and
-// this pins down why rather than leaving it to be rediscovered: the
-// nftables library never reads NFTA_HOOK_DEV back (hookFromMsg keeps the
-// hook number and the priority and drops the rest), so a chain collected
-// from a live kernel carries no device at all, and whyopen refuses for
-// every packet rather than guess which ones the chain can see.
-//
-// The evaluator does narrow by device when the document carries one, which
-// the unit tests cover. The day the collector can read the attribute, this
-// expectation flips to reachable, and that is the point of writing it down
-// as a test instead of a comment.
-func TestIngressChainOnAnotherDeviceIsStillUnknownToday(t *testing.T) {
+// the veth and must not touch that verdict. This is the test that proves
+// decision 0006 works against a real kernel: the nftables library drops
+// NFTA_HOOK_DEV when it reads a chain back, so whyopen issues its own
+// NFT_MSG_GETCHAIN dump to recover it. Without that read this returns
+// unknown, which is what v0.4.0 did for every ingress chain anywhere.
+func TestIngressChainOnAnotherDeviceLeavesTheVerdictAlone(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "nft", "python3")
 
@@ -532,11 +526,41 @@ table netdev guard {
 	if v == nil {
 		t.Fatal("no verdict for port 22")
 	}
-	if v.Result != "unknown" {
-		t.Fatalf("port 22 = %s (%s), want unknown: the chain is on lo, but a live read cannot "+
-			"tell which device it is on, so whyopen refuses rather than guessing", v.Result, v.Reason)
+	if v.Result != "reachable" {
+		t.Fatalf("port 22 = %s (%s), want reachable: the ingress chain is on lo, not on the "+
+			"device the packet arrives on", v.Result, v.Reason)
 	}
-	if !strings.Contains(v.Reason, "every device") {
-		t.Errorf("reason = %q, want it to say the chain is treated as seeing every device", v.Reason)
+}
+
+// The other spelling of the same thing: a chain attached to several
+// devices at once arrives as a nested device list rather than the single
+// attribute, and one of these is the arrival device.
+func TestIngressChainOnADeviceListCoversTheArrivalDevice(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	listenIn(t, ns, "0.0.0.0", "22")
+
+	applyNftRuleset(t, ns, fmt.Sprintf(`
+table inet filter {
+	chain input {
+		type filter hook input priority 0; policy accept;
+	}
+}
+table netdev guard {
+	chain ingress-guard {
+		type filter hook ingress devices = { lo, "%s" } priority -500; policy drop;
+	}
+}
+`, nsSideName(ns)))
+
+	v := verdictFor(evaluate(collectIn(t, ns)), 22, "ip")
+	if v == nil {
+		t.Fatal("no verdict for port 22")
+	}
+	if v.Result != "unknown" {
+		t.Fatalf("port 22 = %s (%s), want unknown: the arrival device is in the chain's list",
+			v.Result, v.Reason)
 	}
 }

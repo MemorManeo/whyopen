@@ -632,7 +632,7 @@ func TestDNATNotForwardedWhenOnlyAnotherInterfaceForwards(t *testing.T) {
 // traffic before it ever reaches prerouting.
 func netdevIngress(device string) facts.Table {
 	return facts.Table{Family: "netdev", Name: "guard", Chains: []facts.Chain{{
-		Name: "ingress-guard", Base: true, Hook: "ingress", Device: device,
+		Name: "ingress-guard", Base: true, Hook: "ingress", Devices: []string{device},
 		Priority: -500, Policy: "drop",
 	}}}
 }
@@ -682,4 +682,39 @@ func acceptAllFilter() facts.Table {
 	return facts.Table{Family: "ip", Name: "filter", Chains: []facts.Chain{{
 		Name: "INPUT", Base: true, Hook: "input", Policy: "accept",
 	}}}
+}
+
+// A chain attached to several devices sees a packet on any of them.
+func TestIngressChainOnSeveralDevicesCoversEachOfThem(t *testing.T) {
+	for _, devices := range [][]string{{"eth0", "br-abc"}, {"br-abc", "eth0"}} {
+		f := hostFacts()
+		guard := netdevIngress("eth0")
+		guard.Chains[0].Devices = devices
+		f.Ruleset = facts.Ruleset{Tables: []facts.Table{acceptAllFilter(), guard}}
+		f.Sockets = []facts.Socket{{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 22, Unit: "ssh.service"}}
+
+		if vs := Evaluate(f, InternetZone()); vs[0].Result != "unknown" {
+			t.Fatalf("devices %v: result = %q, want unknown: eth0 is in the list", devices, vs[0].Result)
+		}
+	}
+}
+
+// No devices recorded is not "sees nothing". It is whyopen not knowing,
+// which has to be read as "could see anything": the read that fills this
+// in can fail, and a failed refinement must never turn into a confident
+// verdict.
+func TestIngressChainWithNoDevicesIsTreatedAsEveryDevice(t *testing.T) {
+	f := hostFacts()
+	guard := netdevIngress("eth0")
+	guard.Chains[0].Devices = nil
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{acceptAllFilter(), guard}}
+	f.Sockets = []facts.Socket{{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 22, Unit: "ssh.service"}}
+
+	vs := Evaluate(f, InternetZone())
+	if vs[0].Result != "unknown" {
+		t.Fatalf("result = %q, want unknown when the devices could not be read", vs[0].Result)
+	}
+	if !strings.Contains(vs[0].Reason, "could not read") {
+		t.Errorf("reason = %q, want it to say the devices could not be read", vs[0].Reason)
+	}
 }
