@@ -13,6 +13,7 @@ import (
 	"github.com/MemorManeo/whyopen/internal/facts"
 	"github.com/MemorManeo/whyopen/internal/model"
 	"github.com/MemorManeo/whyopen/internal/policy"
+	"github.com/MemorManeo/whyopen/internal/probe"
 	"github.com/MemorManeo/whyopen/internal/report"
 )
 
@@ -21,8 +22,11 @@ const usage = `whyopen: what is actually reachable from the internet, and why.
 Usage:
   whyopen collect [-o FILE]        snapshot this host into a facts document
   whyopen check [-facts FILE] [-explain PORT] [-policy FILE] [-json]
+                [-probe-from ssh://HOST]
                                     report what is reachable, and why
   whyopen policy init [-o FILE]    write a policy from what is reachable now
+  whyopen probe -target IP -ports SPEC
+                                    connect to a host and report what answers
   whyopen version                  print the build version
 
 whyopen is read-only. It never creates, changes or deletes a rule.
@@ -113,6 +117,8 @@ func main() {
 		os.Exit(runCheck(os.Args[2:]))
 	case "policy":
 		os.Exit(runPolicy(os.Args[2:]))
+	case "probe":
+		os.Exit(runProbe(os.Args[2:]))
 	case "version":
 		os.Exit(runVersion())
 	case "-h", "--help", "help":
@@ -231,6 +237,7 @@ func runCheck(args []string) int {
 	factsPath := fs.String("facts", "", "evaluate this facts document instead of collecting one")
 	policyPath := fs.String("policy", "", "check the verdicts against this policy file")
 	jsonOut := fs.Bool("json", false, "write the verdict set as a JSON document instead of a table")
+	probeFrom := fs.String("probe-from", "", "check the model against reality by probing this host from ssh://HOST")
 	explain := fs.Int("explain", 0, "print the full rule path for this port")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -259,6 +266,18 @@ func runCheck(args []string) int {
 	zone := model.InternetZone()
 	verdicts := model.Evaluate(f, zone)
 
+	// Reality first, then the policy: a policy decides against what is
+	// actually reachable, not against what the ruleset was read to mean.
+	var disagreements []probe.Disagreement
+	if *probeFrom != "" {
+		var err error
+		verdicts, disagreements, err = probeThisHost(*probeFrom, f, verdicts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return exitError
+		}
+	}
+
 	// The policy is checked against the whole verdict set before anything
 	// is printed, so every output mode reports the same judgement and the
 	// same exit code regardless of what it chose to show.
@@ -274,13 +293,15 @@ func runCheck(args []string) int {
 			shown = onPort(verdicts, *explain)
 		}
 		err := report.JSON(os.Stdout, shown, report.JSONOptions{
-			Version:      currentVersion().Version,
-			Hostname:     f.Host.Hostname,
-			Zone:         zone.Name,
-			Warnings:     f.Warnings,
-			Policy:       res,
-			PolicySource: *policyPath,
-			WithPath:     *explain != 0,
+			Version:       currentVersion().Version,
+			Hostname:      f.Host.Hostname,
+			Zone:          zone.Name,
+			Warnings:      f.Warnings,
+			Policy:        res,
+			PolicySource:  *policyPath,
+			WithPath:      *explain != 0,
+			ProbeSource:   *probeFrom,
+			Disagreements: disagreements,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "write json: %v\n", err)
@@ -295,6 +316,13 @@ func runCheck(args []string) int {
 		}
 	} else {
 		report.Table(os.Stdout, verdicts, f.Warnings)
+	}
+
+	// The probe block prints above the policy block: a disagreement means
+	// the verdicts above it were wrong, which is the first thing a reader
+	// needs to know.
+	if *probeFrom != "" {
+		report.Probe(os.Stdout, disagreements, *probeFrom)
 	}
 
 	// The policy block prints in every text mode, including --explain, so

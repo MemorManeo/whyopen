@@ -122,6 +122,10 @@ If you find one, it is the most serious kind of bug this tool can have.
   notice.
 - **whyopen is read-only.** It never creates, changes, or deletes an
   nftables rule, a socket, or anything else on the host. It only reads.
+  The single exception sends nothing to *this* host either: `whyopen
+  probe` opens ordinary TCP connections to a target you name, and runs
+  only when you ask for it by name (`probe`, or `check --probe-from`).
+  It connects and closes; it changes nothing anywhere.
 
 ## Install
 
@@ -145,8 +149,10 @@ ruleset; see Requirements above.
 ```
 whyopen collect [-o FILE]                      snapshot this host into a facts document
 whyopen check [-facts FILE] [-explain PORT] [-policy FILE] [-json]
+              [-probe-from ssh://HOST]
                                                report what is reachable, and why
 whyopen policy init [-o FILE] [-facts FILE]    write a policy from what is reachable now
+whyopen probe -target IP -ports SPEC [-json]   connect to a host and report what answers
 whyopen version                                print the build version
 ```
 
@@ -160,6 +166,64 @@ or replay a bug report, without re-collecting.
 `whyopen check -explain PORT` prints the full rule path for one port: every
 base chain hit, in traversal order, with the handle and an nft-like
 rendering of each rule.
+
+### Checking the model against reality: `probe`
+
+Everything else in whyopen concludes what the kernel would do with a
+packet by reading rules. This finds out by sending one.
+
+```
+$ whyopen probe -target 203.0.113.10 -ports 22,80,443,3000
+PORT      STATE     DETAIL
+22/tcp    open
+80/tcp    open
+443/tcp   open
+3000/tcp  filtered
+```
+
+`open` completed a handshake. `closed` was answered with a reset, so the
+packet reached the host's TCP stack or a rule that rejects rather than
+drops, which is not the same as no answer at all. `filtered` got no answer
+before the timeout. `error` means whyopen could not find out (no route,
+for instance) and is never read as evidence about the port.
+
+Probing your own host from itself proves little, because the packet may
+never leave the machine. The point is to probe from somewhere else:
+
+```
+whyopen check --probe-from ssh://vantage.example
+```
+
+That asks `vantage.example` to probe this host's global address, on every
+TCP port something here is listening on, and folds the answers into the
+verdict set. The probe is authoritative for TCP: it found out, the model
+concluded. UDP is left model-only, because a TCP probe says nothing about
+it and an unanswered UDP probe says almost nothing about anything. It
+needs whyopen installed on that machine, and your ssh config decides the
+key, the port and the rest.
+
+The disagreements are the reason to run it:
+
+```
+probe from ssh://vantage.example: 1 port(s) where the model and reality disagree
+PORT      FAMILY  MODELLED  PROBED  WHAT THAT MEANS
+3000/tcp  IPv4    filtered  open    the port is open and whyopen read the ruleset as
+                                    closing it, so the model is missing something
+```
+
+Each direction means something different, and the table says which. The
+model saying `filtered` where the probe gets in means whyopen is missing
+something: treat the port as open and the model as wrong. The model saying
+`reachable` where nothing answers means something between the probe and
+this host stops it, a provider firewall or a cloud security group, and
+nothing on this host will show it. An `unknown` that a probe resolves is
+not a disagreement at all: it is the case probing exists for.
+
+Reality reaches the policy: a port the probe found open is a violation if
+the policy does not allow it, whatever the ruleset was read to mean. A
+probe that could not run at all is a tool error (exit 3), never a quiet
+fall back to the model, because a run that silently did not check reality
+looks exactly like one that did.
 
 ### `--json`
 

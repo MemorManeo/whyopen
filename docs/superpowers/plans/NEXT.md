@@ -8,8 +8,8 @@ the core plan so the reasoning survives.
 The v0.1 plan (`2026-08-29-whyopen-v0.1.md`) then consumed three of these
 entries: 3, 6 and 7, each marked below with what landed and what is left of
 it rather than deleted, so the reasoning survives that plan too. v0.2 took
-entry 4, and v0.3 entry 1, marked the same way. Everything unmarked is
-still queued.
+entry 4, v0.3 entry 1, and v0.4 entries 2 and 5 plus every item in the
+smaller list, marked the same way. Everything unmarked is still queued.
 
 Known gaps that motivate several of these are recorded separately in
 `docs/decisions/0002-known-gaps-and-follow-up.md`.
@@ -57,12 +57,24 @@ Each of those is a deliberate refusal to invent a surface before someone
 needs it. Entry 2's `--json` will have to carry the policy result too, or
 a machine reader gets the verdicts without the judgement on them.
 
-## 2. `--json` output
+## 2. `--json` output (landed in v0.4)
 
-A stable, versioned schema for the verdict set, so the tool composes with
-other things. Blocked on one small decision: `Verdict.DNAT` is currently an
-exported field of an unexported type, which has to become exportable before
-it can be serialised.
+`whyopen check --json` writes a versioned document: schema_version, the
+build, the hostname, the zone, every verdict, the collection warnings, the
+policy result when one was given, and the probe disagreements when one was
+run. The rule path is included only under `--explain`, which narrows the
+document to one port exactly as it narrows the text output.
+
+The document is its own shape rather than the model's structs marshalled,
+because a schema that is just internal types would change whenever they
+were refactored and this one is a promise. Its schema_version is its own
+number too: the facts document describes what was collected, this one what
+was concluded.
+
+The blocker this entry named, `Verdict.DNAT` being an exported field of an
+unexported type, was real but not for the reason given: with the output
+shape separate, nothing needed to marshal that type. It was exported so a
+test could construct a rewritten verdict.
 
 ## 3. Decode `xt recent` (landed in v0.1)
 
@@ -124,14 +136,47 @@ key type, are all deliberate refusals rather than gaps: closing any of
 those needs a captured ruleset that actually exercises the shape, the same
 evidence-first posture every decoder in this project has followed.
 
-## 5. Probe and reconcile
+## 5. Probe and reconcile (landed in v0.4)
 
-`whyopen probe --target <ip> --ports <spec>` run from anywhere, and
-`whyopen check --probe-from ssh://host` shelling out to a second machine.
-Merge probe results into the verdict set with the probe authoritative for
-TCP, leave UDP model-only, and report disagreements between model and
-reality as the headline diagnostic. This is also the answer for a host behind
-NAT, where the model correctly refuses to conclude anything.
+Both halves are in: `whyopen probe -target <ip> -ports <spec>` run from
+anywhere, and `whyopen check -probe-from ssh://host`, which asks a second
+machine to probe this host's global address on every TCP port something
+here is listening on. `internal/probe` holds the connect probe, the
+reconciliation and the ssh runner; the runner is an interface, so the
+wiring is tested without an ssh server.
+
+The probe is authoritative for TCP and UDP stays model-only, as this entry
+asked. Three refinements the entry did not name, each because writing it
+raised the question:
+
+- A refused connection is not the same as no answer. A reset means the
+  packet reached the host's TCP stack or a rule that rejects rather than
+  drops, so `closed` and `filtered` are separate states and the verdict
+  says which happened.
+- A probe that errored (no route, a DNS failure) is ignored entirely
+  rather than merged. Not finding out is not evidence, and treating it as
+  any kind of answer would let a broken vantage point overrule the model.
+- The probe answers about an address and a port, not about a socket, so
+  when several sockets share a port the same answer lands on all of them
+  and the reason says whyopen cannot tell which one answered. One
+  disagreement is recorded per port rather than per socket.
+
+Reality reaches the policy: reconciliation happens before the policy
+check, so a port the probe found open is a violation if the policy does
+not allow it, whatever the ruleset was read to mean. A probe that could
+not run is a tool error rather than a quiet fall back to the model,
+because a run that silently did not check reality looks exactly like one
+that did.
+
+The target and the port list end up in a command another machine's shell
+runs, so the target must parse as an IP address and the ports are
+rendered from numbers, checked before anything is run rather than quoted
+and hoped for.
+
+What is left: this is a TCP connect probe, so it needs a listener to
+answer and says nothing about UDP. A host behind NAT is exactly the case
+it was wanted for, and it handles it the same way as any other: the model
+refuses to conclude, and the probe decides.
 
 ## 6. Network namespace integration harness in CI (landed in v0.1)
 
