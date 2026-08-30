@@ -881,6 +881,7 @@ table inet srv {
 `)
 
 	vs := evaluate(collectIn(t, ns))
+	failed := false
 	for port, want := range map[uint16]string{
 		22:   "reachable", // in the port set
 		8080: "reachable", // rate limited, which whyopen reads as transparent
@@ -890,10 +891,18 @@ table inet srv {
 		v := verdictFor(vs, port, "ip")
 		if v == nil {
 			t.Errorf("no verdict for %d", port)
+			failed = true
 			continue
 		}
 		if v.Result != want {
 			t.Errorf("%d = %s (%s), want %s", port, v.Result, v.Reason, want)
+			failed = true
 		}
+	}
+	// A reason naming a rule handle is only useful next to the rule. The
+	// ruleset in nft's own words makes a failure here a capture rather
+	// than a puzzle, which is what the firewalld job's census taught.
+	if failed {
+		t.Logf("ruleset:\n%s", nsRun(t, ns, "nft", "-a", "list", "ruleset"))
 	}
 }
