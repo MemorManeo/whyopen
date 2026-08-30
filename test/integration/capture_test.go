@@ -3,12 +3,15 @@
 package integration
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
+	"github.com/MemorManeo/whyopen/internal/probe"
 	"os"
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/MemorManeo/whyopen/internal/collect"
 	"github.com/MemorManeo/whyopen/internal/facts"
@@ -684,4 +687,62 @@ table inet srv {
 	if census.ruleCount == 0 {
 		t.Fatal("no rules read, so this census asserted nothing")
 	}
+}
+
+// TestCaptureSkuidOnInput answers a question by experiment rather than by
+// reading documentation. `meta skuid` names the owner of the socket a
+// packet belongs to, which is a natural thing to write in an output
+// chain; whether it means anything on the input path, where the socket
+// has not been looked up yet, decides whether whyopen can resolve it or
+// must keep refusing it and leaving every verdict below unknown.
+//
+// The kernel is asked directly: a chain that drops by default and accepts
+// only `meta skuid 0`, a listener owned by root behind it, and a real
+// probe across the veth. If the port answers, the match resolved on the
+// input path and whyopen could model it, because a facts document already
+// carries every socket's uid. If it does not, the match never fires
+// inbound and whyopen could resolve it as a plain no-match.
+//
+// It asserts only that the two outcomes are told apart, and prints which
+// one happened, because either answer is a finding and neither is one to
+// guess at.
+func TestCaptureSkuidOnInput(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	listenIn(t, ns, "0.0.0.0", "8080")
+	applyNftRuleset(t, ns, `
+table inet skuidcap {
+	chain input {
+		type filter hook input priority 0; policy drop;
+		meta skuid 0 accept
+	}
+}
+`)
+
+	// The probe runs in the root namespace, so this crosses the veth as a
+	// real packet rather than being reasoned about.
+	res := probe.Run(context.Background(), probe.Options{
+		Target: "203.0.113.10", Ports: []uint16{8080}, Timeout: 3 * time.Second,
+	})
+	if len(res) != 1 {
+		t.Fatalf("probe returned %d results", len(res))
+	}
+	switch res[0].State {
+	case probe.StateOpen:
+		t.Logf("FINDING: `meta skuid 0` matched on the input path, so the socket owner is "+
+			"available there and whyopen could resolve it from facts.Socket.UID (state=%s)", res[0].State)
+	default:
+		t.Logf("FINDING: `meta skuid 0` did not match on the input path (state=%s, %s), so the "+
+			"rule never fires inbound and whyopen could resolve it as a no-match rather than refusing",
+			res[0].State, res[0].Detail)
+	}
+
+	// And what whyopen says today, for the record.
+	v := verdictFor(evaluate(collectIn(t, ns)), 8080, "ip")
+	if v == nil {
+		t.Fatal("no verdict for 8080")
+	}
+	t.Logf("whyopen today: 8080 = %s (%s)", v.Result, v.Reason)
 }
