@@ -161,3 +161,58 @@ func TestPolicyInitRefusesToOverwriteAnExistingFile(t *testing.T) {
 		t.Fatalf("the existing policy was overwritten:\n%s", b)
 	}
 }
+
+// forwardEveryPortFacts is a host whose ruleset rewrites the destination
+// of every port to a machine on its LAN. whyopen reports forwarded ports
+// one row at a time and can name none of these, so the run has something
+// real it cannot show, which is exactly what fail_on_unknown is for.
+func forwardEveryPortFacts(t *testing.T) string {
+	t.Helper()
+	f := facts.Facts{
+		SchemaVersion: facts.SchemaVersion,
+		Host: facts.Host{
+			Hostname: "router",
+			Interfaces: []facts.Interface{{Name: "eth0", Index: 2, Up: true, Addresses: []facts.Addr{
+				{IP: "203.0.113.10", Prefix: 24, Family: "ip", Scope: "global"},
+			}}},
+			Sysctls: facts.Sysctls{IPv4Forward: true},
+		},
+		Ruleset: facts.Ruleset{Tables: []facts.Table{{
+			Family: "ip", Name: "nat", Chains: []facts.Chain{{
+				Name: "prerouting", Base: true, Hook: "prerouting", Policy: "accept",
+				Rules: []facts.Rule{{Handle: 1, Exprs: []facts.Expr{
+					{Kind: facts.ExprImmediate, Immediate: &facts.ImmediateExpr{Register: 1, Data: "c0000232"}},
+					{Kind: facts.ExprNAT, NAT: &facts.NATExpr{Type: "dnat", Family: "ip", AddrRegister: 1}},
+				}}},
+			}},
+		}}},
+	}
+	b, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return writeTemp(t, "facts.json", string(b))
+}
+
+// The guardrail half of decision 0014. Such a rewrite produces no row, so
+// no allow entry can cover it and no violation can be raised for it; a
+// policy that fails on what whyopen could not resolve has to fail on this
+// too, or a host forwarding every port to somewhere passes a run green.
+func TestCheckExitsUnknownForAForwardItCannotReduceToPorts(t *testing.T) {
+	path := forwardEveryPortFacts(t)
+
+	pol := writeTemp(t, "strict.yaml", "version: 1\nfail_on_unknown: true\n")
+	if got := runCheck([]string{"-facts", path, "-policy", pol}); got != exitUnknown {
+		t.Fatalf("exit = %d, want %d (exitUnknown) for a rule that forwards every port", got, exitUnknown)
+	}
+
+	// Without the flag it is a warning and nothing more: the exit codes
+	// are a 1.0 promise, and this changes none of them on its own.
+	lax := writeTemp(t, "lax.yaml", "version: 1\n")
+	if got := runCheck([]string{"-facts", path, "-policy", lax}); got != exitOK {
+		t.Fatalf("exit = %d, want %d (exitOK) without fail_on_unknown", got, exitOK)
+	}
+	if got := runCheck([]string{"-facts", path}); got != exitOK {
+		t.Fatalf("exit = %d, want %d (exitOK) with no policy at all", got, exitOK)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MemorManeo/whyopen/internal/facts"
 	"github.com/MemorManeo/whyopen/internal/model"
 	"github.com/MemorManeo/whyopen/internal/policy"
 	"github.com/MemorManeo/whyopen/internal/probe"
@@ -90,5 +91,34 @@ func TestProbeSaysSoWhenTheModelAndRealityAgree(t *testing.T) {
 	Probe(&sb, nil, "vantage.example")
 	if !strings.Contains(sb.String(), "agree") {
 		t.Errorf("a run with no disagreement says nothing:\n%s", sb.String())
+	}
+}
+
+// A run can exit 2 for something that never became a row: a rewrite
+// forwarding ports whyopen cannot name. The policy block is where every
+// non-zero exit gets its visible reason, so it has to say so there too,
+// and it must not print the all-clear line while doing it.
+func TestPolicyReportsAForwardItCouldNotReduceToPorts(t *testing.T) {
+	res := policy.Result{
+		FailOnUnknown: true,
+		Unreadable:    []facts.Warning{{Source: "forwarded-ports", Message: "forwards every port to 192.0.2.50"}},
+	}
+	var sb strings.Builder
+	Policy(&sb, res, "whyopen.yaml")
+	out := sb.String()
+	if strings.Contains(out, "every reachable port is allowed") {
+		t.Fatalf("the all-clear printed for a run that exits 2:\n%s", out)
+	}
+	if !strings.Contains(out, "fail_on_unknown") || !strings.Contains(out, "forward") {
+		t.Errorf("output does not say why the run failed:\n%s", out)
+	}
+
+	// Without the flag it changes no exit code, and the warnings block
+	// above has already said it.
+	res.FailOnUnknown = false
+	sb.Reset()
+	Policy(&sb, res, "whyopen.yaml")
+	if !strings.Contains(sb.String(), "every reachable port is allowed") {
+		t.Errorf("without fail_on_unknown the run is clean and should say so:\n%s", sb.String())
 	}
 }

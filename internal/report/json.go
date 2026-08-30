@@ -102,6 +102,12 @@ type jsonPolicy struct {
 	Violations    []jsonVerdict `json:"violations"`
 	Stale         []jsonStale   `json:"stale"`
 	Unknown       []jsonVerdict `json:"unknown"`
+	// Unreadable is what fail_on_unknown fails the run on besides the
+	// unknown verdicts: what never became a verdict at all, today a
+	// destination rewrite whose forwarded ports whyopen cannot name. The
+	// same warnings are in the document's own warnings list; they are
+	// repeated here because this is where the exit code is explained.
+	Unreadable []facts.Warning `json:"unreadable,omitempty"`
 }
 
 type jsonStale struct {
@@ -130,6 +136,7 @@ func JSON(w io.Writer, vs []model.Verdict, opt JSONOptions) error {
 			FailOnUnknown: opt.Policy.FailOnUnknown,
 			Violations:    jsonVerdicts(opt.Policy.Violations, false),
 			Unknown:       jsonVerdicts(opt.Policy.Unknown, false),
+			Unreadable:    opt.Policy.Unreadable,
 			Stale:         make([]jsonStale, 0, len(opt.Policy.Stale)),
 		}
 		for _, s := range opt.Policy.Stale {

@@ -13,11 +13,15 @@ import (
 // policy produced is never one the reader cannot see a reason for.
 func Policy(w io.Writer, res policy.Result, source string) {
 	show := res.Unknown
+	// What never became a verdict is reported the same way, and under the
+	// same condition: without fail_on_unknown it changes no exit code, and
+	// the warnings block above already said it.
+	blind := res.Unreadable
 	if !res.FailOnUnknown {
 		// The main table already lists them, and here they change nothing.
-		show = nil
+		show, blind = nil, nil
 	}
-	if len(res.Violations) == 0 && len(res.Stale) == 0 && len(show) == 0 {
+	if len(res.Violations) == 0 && len(res.Stale) == 0 && len(show) == 0 && len(blind) == 0 {
 		fmt.Fprintf(w, "\npolicy %s: every reachable port is allowed\n", source)
 		return
 	}
@@ -41,6 +45,13 @@ func Policy(w io.Writer, res policy.Result, source string) {
 		fmt.Fprintf(tw, "unknown\t%d/%s\t%s\t%s\t%s\n",
 			v.Endpoint.Port, v.Endpoint.Proto, family(v.Family), dash(v.Endpoint.Owner),
 			"unresolved, and fail_on_unknown is set")
+	}
+	for range blind {
+		// No port to name: that is exactly what makes it unreadable. The
+		// warning above carries the rule, so this says which line to go
+		// read rather than repeating the sentence.
+		fmt.Fprintf(tw, "unknown\t%s\t%s\t%s\t%s\n", "-", "-", "-",
+			"a forward whyopen could not reduce to ports (see the warnings above), and fail_on_unknown is set")
 	}
 	tw.Flush()
 }

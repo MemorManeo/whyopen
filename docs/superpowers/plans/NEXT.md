@@ -353,14 +353,14 @@ the bug.
 
 What is left of it:
 
-- A rewrite whyopen cannot reduce to ports does not change the exit code.
-  It is in the warnings block and in `--json`, so a person sees it and a
-  machine reading the document sees it, but a CI job reading only the exit
-  code does not. Whether "this host forwards every port to somewhere"
-  should fail a run is a policy question, and the policy file has no way
-  to express it today.
-- `whyopen policy init` does not mention those warnings either. A
-  generated policy silently covers only the ports that became rows.
+- ~~A rewrite whyopen cannot reduce to ports does not change the exit
+  code.~~ Done: `fail_on_unknown` covers it, through
+  `policy.Result.Unreadable`, and the policy block says which warning
+  caused the exit. Without the flag nothing about the exit codes moves.
+- `whyopen policy init` does not mention those warnings. A generated
+  policy silently covers only the ports that became rows, though the very
+  next `check --policy` exits 2 on them, since a generated policy sets
+  `fail_on_unknown: true`.
 - The scan reads a port constraint written as an equality or as a flat
   set. A port matched through a bitmask, an interval set, a map, a
   concatenated key type, or a set the document does not carry are all

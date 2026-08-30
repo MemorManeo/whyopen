@@ -265,7 +265,12 @@ func runCheck(args []string) int {
 
 	zone := model.InternetZone()
 	verdicts := model.Evaluate(f, zone)
-	warnings := warningsFor(f)
+	// The rewrites whyopen could not turn into rows. They are printed with
+	// the collection warnings and, under a policy that fails on unknowns,
+	// they fail the run: a guardrail that ignores what it cannot see is a
+	// false green.
+	forwards := model.ForwardNotes(f)
+	warnings := append(append([]facts.Warning{}, f.Warnings...), forwards...)
 
 	// Reality first, then the policy: a policy decides against what is
 	// actually reachable, not against what the ruleset was read to mean.
@@ -284,7 +289,7 @@ func runCheck(args []string) int {
 	// same exit code regardless of what it chose to show.
 	var res *policy.Result
 	if *policyPath != "" {
-		r := policy.Check(pol, verdicts)
+		r := policy.Check(pol, verdicts, forwards)
 		res = &r
 	}
 
@@ -340,21 +345,6 @@ func runCheck(args []string) int {
 	return checkExitCode(f, res)
 }
 
-// warningsFor is everything the run has to say beyond the verdicts: what
-// collection could not see, and the destination rewrites whose forwarded
-// ports whyopen could not turn into rows. The two are printed together
-// because a reader needs the same thing from both, a reason not to trust
-// the table as the whole story.
-func warningsFor(f facts.Facts) []facts.Warning {
-	notes := model.ForwardNotes(f)
-	if len(notes) == 0 {
-		return f.Warnings
-	}
-	out := make([]facts.Warning, 0, len(f.Warnings)+len(notes))
-	out = append(out, f.Warnings...)
-	return append(out, notes...)
-}
-
 // onPort narrows a verdict set to one port, which is what --explain asks
 // for. Both families of it are kept: they are separate verdicts and can
 // disagree.
@@ -383,7 +373,7 @@ func checkExitCode(f facts.Facts, res *policy.Result) int {
 	if len(res.Violations) > 0 {
 		return exitViolation
 	}
-	if res.FailOnUnknown && len(res.Unknown) > 0 {
+	if res.FailOnUnknown && (len(res.Unknown) > 0 || len(res.Unreadable) > 0) {
 		return exitUnknown
 	}
 	return exitOK

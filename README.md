@@ -300,7 +300,7 @@ fail_on_unknown: true
 |---|---|
 | 0 | every reachable port is allowed |
 | 1 | a violation: something reachable the policy does not allow |
-| 2 | `unknown` verdicts, and `fail_on_unknown` is set |
+| 2 | `unknown` verdicts, or a forward whyopen could not reduce to ports, and `fail_on_unknown` is set |
 | 3 | tool error: unreadable ruleset, missing privilege, unreadable policy, bad arguments |
 
 A run with both a violation and an unknown exits 1, because a violation
@@ -330,14 +330,21 @@ open, not for ports nobody could account for. The file it generates sets
 `check --policy` exits 2. That is deliberate. A guardrail that ignores
 what it cannot see is a false green.
 
+The same flag covers what never became a row at all. A rewrite that
+forwards every port, or a range of them, cannot be allowed by an entry
+and cannot raise a violation, because whyopen names no port for it; with
+`fail_on_unknown` set it exits 2 and the policy block says which warning
+to go read. Without the flag it stays a warning and changes no exit
+code.
+
 ## Compatibility
 
 1.0 means these are promises, and breaking one takes a major version.
 
 **The command line.** The subcommands, their flags, and above all the exit
-codes: 0 clean, 1 a policy violation, 2 unknown verdicts with
-`fail_on_unknown` set, 3 a tool error. Anything scripted against those
-keeps working.
+codes: 0 clean, 1 a policy violation, 2 what whyopen could not resolve
+with `fail_on_unknown` set, 3 a tool error. Anything scripted against
+those keeps working.
 
 **The facts document.** Its `schema_version` is 1. It moves only when a
 reader needs new code to read a document safely: a field removed, renamed,

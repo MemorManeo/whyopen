@@ -3,6 +3,7 @@ package policy
 import (
 	"testing"
 
+	"github.com/MemorManeo/whyopen/internal/facts"
 	"github.com/MemorManeo/whyopen/internal/model"
 )
 
@@ -27,7 +28,7 @@ func TestCheckFlagsAReachablePortThatIsNotAllowed(t *testing.T) {
 	res := Check(p, []model.Verdict{
 		reachable(443, "tcp", "ip", "nginx.service"),
 		reachable(8080, "tcp", "ip", "node"),
-	})
+	}, nil)
 	if len(res.Violations) != 1 {
 		t.Fatalf("violations = %v, want only 8080/tcp", res.Violations)
 	}
@@ -43,7 +44,7 @@ func TestCheckReportsEachFamilySeparately(t *testing.T) {
 	res := Check(Policy{}, []model.Verdict{
 		reachable(8080, "tcp", "ip", "node"),
 		reachable(8080, "tcp", "ip6", "node"),
-	})
+	}, nil)
 	if len(res.Violations) != 2 {
 		t.Fatalf("violations = %d, want one per family", len(res.Violations))
 	}
@@ -53,7 +54,7 @@ func TestCheckReportsEachFamilySeparately(t *testing.T) {
 // 22/udp, and reading it as though it did would hide an open port.
 func TestCheckDoesNotLetOneProtoAllowTheOther(t *testing.T) {
 	p := Policy{Allow: []Entry{{Port: 22, Proto: "tcp"}}}
-	res := Check(p, []model.Verdict{reachable(22, "udp", "ip", "wg")})
+	res := Check(p, []model.Verdict{reachable(22, "udp", "ip", "wg")}, nil)
 	if len(res.Violations) != 1 {
 		t.Fatalf("violations = %v, want 22/udp flagged", res.Violations)
 	}
@@ -65,7 +66,7 @@ func TestCheckIgnoresFilteredAndUnknownForViolations(t *testing.T) {
 	res := Check(Policy{}, []model.Verdict{
 		verdict(5432, "tcp", "ip", "filtered"),
 		verdict(9000, "tcp", "ip", "unknown"),
-	})
+	}, nil)
 	if len(res.Violations) != 0 {
 		t.Fatalf("violations = %v, want none", res.Violations)
 	}
@@ -73,7 +74,7 @@ func TestCheckIgnoresFilteredAndUnknownForViolations(t *testing.T) {
 
 func TestCheckReportsAnAllowedPortThatIsFilteredAsStale(t *testing.T) {
 	p := Policy{Allow: []Entry{{Port: 5432, Proto: "tcp"}}}
-	res := Check(p, []model.Verdict{verdict(5432, "tcp", "ip", "filtered")})
+	res := Check(p, []model.Verdict{verdict(5432, "tcp", "ip", "filtered")}, nil)
 	if len(res.Stale) != 1 {
 		t.Fatalf("stale = %v, want 5432/tcp", res.Stale)
 	}
@@ -84,7 +85,7 @@ func TestCheckReportsAnAllowedPortThatIsFilteredAsStale(t *testing.T) {
 
 func TestCheckReportsAnAllowedPortWithNoListenerAsStale(t *testing.T) {
 	p := Policy{Allow: []Entry{{Port: 9100, Proto: "tcp"}}}
-	res := Check(p, nil)
+	res := Check(p, nil, nil)
 	if len(res.Stale) != 1 {
 		t.Fatalf("stale = %v, want 9100/tcp", res.Stale)
 	}
@@ -98,7 +99,7 @@ func TestCheckReportsAnAllowedPortWithNoListenerAsStale(t *testing.T) {
 // fail_on_unknown acts on, and is not also reported as a dead entry.
 func TestCheckDoesNotCallAnUnknownPortStale(t *testing.T) {
 	p := Policy{Allow: []Entry{{Port: 22, Proto: "tcp"}}}
-	res := Check(p, []model.Verdict{verdict(22, "tcp", "ip", "unknown")})
+	res := Check(p, []model.Verdict{verdict(22, "tcp", "ip", "unknown")}, nil)
 	if len(res.Stale) != 0 {
 		t.Fatalf("stale = %v, want none: whyopen does not know whether the entry is stale", res.Stale)
 	}
@@ -112,7 +113,7 @@ func TestCheckCollectsEveryUnknownVerdict(t *testing.T) {
 		verdict(22, "tcp", "ip", "unknown"),
 		verdict(22, "tcp", "ip6", "unknown"),
 		verdict(80, "tcp", "ip", "reachable"),
-	})
+	}, nil)
 	if len(res.Unknown) != 2 {
 		t.Fatalf("unknown = %d, want both families of 22/tcp", len(res.Unknown))
 	}
@@ -122,8 +123,29 @@ func TestCheckCollectsEveryUnknownVerdict(t *testing.T) {
 // the renderer and the exit code, do not each have to be handed the
 // policy as well.
 func TestCheckCarriesFailOnUnknown(t *testing.T) {
-	res := Check(Policy{FailOnUnknown: true}, nil)
+	res := Check(Policy{FailOnUnknown: true}, nil, nil)
 	if !res.FailOnUnknown {
 		t.Error("result FailOnUnknown = false, want the policy's own setting")
+	}
+}
+
+// A rewrite whyopen could not reduce to ports is not a verdict, so it can
+// never be a violation, and it is not an unknown verdict either: no port
+// was listed for it at all. It is carried separately so the exit code can
+// treat it the way fail_on_unknown treats an unknown, without the report
+// having to invent a port for it.
+func TestCheckCarriesWhatNeverBecameAVerdict(t *testing.T) {
+	notes := []facts.Warning{{Source: "forwarded-ports", Message: "forwards every port"}}
+	p := Policy{Allow: []Entry{{Port: 80, Proto: "tcp"}}, FailOnUnknown: true}
+	res := Check(p, []model.Verdict{reachable(80, "tcp", "ip", "nginx")}, notes)
+
+	if len(res.Unreadable) != 1 {
+		t.Fatalf("unreadable = %v, want the one note", res.Unreadable)
+	}
+	if len(res.Unknown) != 0 {
+		t.Errorf("unknown = %v, want none: no port was listed for it", res.Unknown)
+	}
+	if len(res.Violations) != 0 {
+		t.Errorf("violations = %v, want none: an allow list cannot judge it", res.Violations)
 	}
 }

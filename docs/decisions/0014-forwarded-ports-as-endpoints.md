@@ -132,10 +132,15 @@ and what it runs are all outside what a firewall snapshot can answer.
   rewritten port. It over-reports in the direction this tool always
   over-reports in, and the reason names the rewrite, so a reader can go
   look at the port it lands on.
-- A rewrite whyopen cannot reduce to ports is a warning and nothing more:
-  it does not change the exit code. A CI job reading only the exit code
-  will not learn about a host that forwards every port. Whether that
-  should fail a run is a policy question, left for whoever needs it.
+- A rewrite whyopen cannot reduce to ports reaches the guardrail through
+  `fail_on_unknown`, and only through it: `policy.Check` carries such a
+  warning in `Result.Unreadable`, separate from the unknown verdicts,
+  since no port was listed for it and an allow list has nothing to say
+  about it. With the flag set the run exits 2 and the policy block names
+  the warning to go read; without it, nothing about the exit codes
+  changes, which keeps the 1.0 promise about them intact. Deciding it
+  this way rather than inventing a port-shaped row is the same call the
+  scan makes everywhere else: report it, do not dress it up as a verdict.
 - The scan runs twice per `check`: once inside `Evaluate`, for the
   endpoints, and once through `model.ForwardNotes`, for the warnings the
   command prints. It is pure and walks one hook, which is cheaper than
