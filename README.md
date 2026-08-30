@@ -94,9 +94,12 @@ If you find one, it is the most serious kind of bug this tool can have.
 - Linux only, with an nftables ruleset. UFW and Docker's DNAT rules both go
   through nftables today and are covered. Rules written to the
   **iptables-legacy** backend are invisible to whyopen, which reads only
-  nftables; it detects their presence (a non-empty `/proc/net/ip_tables_names`
-  or `/proc/net/ip6_tables_names`, which only the legacy kernel modules
-  create) and prints a warning saying every verdict may be incomplete.
+  nftables; it detects that the backend is in use (a non-empty
+  `/proc/net/ip_tables_names` or `/proc/net/ip6_tables_names`, which only
+  the legacy kernel modules create) and warns that every verdict may be
+  incomplete. It does not claim rules exist there: that file lists tables
+  that have been registered, which happens as soon as anything loads the
+  module, and whyopen cannot tell from `/proc` which of them carry rules.
   firewalld's own zone configuration is not read, but the nftables ruleset
   its backend writes is: the expressions such a ruleset emits were
   captured and are decoded (see

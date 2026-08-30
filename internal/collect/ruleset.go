@@ -246,9 +246,12 @@ func PolicyName(p *nftables.ChainPolicy) string {
 }
 
 // legacyTableFiles are the /proc entries the ip_tables and ip6_tables kernel
-// modules create once a legacy ruleset is loaded. iptables-nft never loads
-// those modules, so a non-empty file here is a serviceable signal that real
-// iptables-legacy rules exist.
+// modules create once they are loaded. iptables-nft never loads those
+// modules, so a non-empty file here is a serviceable signal that the legacy
+// backend is in use. It is not evidence that any rule exists in it: the
+// file lists tables that have been registered, and registering happens as
+// soon as anything touches the legacy binary, so the warning says what this
+// shows rather than what it would like to conclude.
 var legacyTableFiles = []struct {
 	rel     string
 	backend string
@@ -286,8 +289,8 @@ func LegacyBackend(procRoot string) []facts.Warning {
 		}
 		warns = append(warns, facts.Warning{
 			Source: "ruleset",
-			Message: fmt.Sprintf("%s rules are present: /proc/%s lists the tables %s. whyopen reads only the nftables ruleset, so it cannot see them and EVERY verdict below may be incomplete: a port reported filtered may in fact be open",
-				f.backend, f.rel, strings.Join(tables, ", ")),
+			Message: fmt.Sprintf("%s has registered the tables %s (/proc/%s). Registering a table is not the same as filling it, and whyopen cannot tell from /proc which of these carry rules: loading the module is enough to create this entry. whyopen reads only the nftables ruleset, so if they do carry rules EVERY verdict below may be incomplete, and a port reported filtered may in fact be open. Check with %s -S",
+				f.backend, strings.Join(tables, ", "), f.rel, f.backend),
 		})
 	}
 	return warns

@@ -361,3 +361,28 @@ func TestLegacyBackendWarnsWhenItCannotCheck(t *testing.T) {
 		t.Fatalf("warnings = %+v, want one saying the check could not be made", warns)
 	}
 }
+
+// /proc/net/ip_tables_names lists tables the ip_tables module has
+// registered, which happens as soon as anything loads it: running
+// `iptables -L` against an empty legacy ruleset is enough. The warning
+// must not claim rules exist on that evidence, only that whyopen cannot
+// see whether they do.
+func TestLegacyBackendDoesNotClaimRulesItCannotSee(t *testing.T) {
+	proc := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(proc, "net"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "net", "ip_tables_names"), []byte("filter\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	msg := LegacyBackend(proc)[0].Message
+	if strings.Contains(msg, "rules are present") {
+		t.Errorf("message asserts rules exist on evidence that only shows a registered table: %q", msg)
+	}
+	// It still has to say what is at stake, and that whyopen cannot tell.
+	for _, want := range []string{"registered", "cannot tell", "incomplete"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message = %q, missing %q", msg, want)
+		}
+	}
+}
