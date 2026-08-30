@@ -749,3 +749,66 @@ table inet skuidcap {
 		t.Fatalf("whyopen says 8080 is %s (%s), but the probe found it filtered", v.Result, v.Reason)
 	}
 }
+
+// TestCaptureNativeDNAT captures what a hand-written `dnat to` compiles
+// to. Docker reaches the kernel through iptables-nft, so its port
+// forwards arrive as an xt DNAT target whyopen has decoded since v0.1; a
+// router or VM host writing the rule itself produces a native nat
+// expression instead, which whyopen does not decode at all.
+//
+// expr.NAT carries register numbers rather than an address, so the
+// address and port must be loaded by something before it. What that
+// something is, and in which registers, is the thing to capture.
+func TestCaptureNativeDNAT(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft")
+
+	ns := newNetns(t)
+	applyNftRuleset(t, ns, `
+table ip natcap {
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		tcp dport 8080 dnat to 192.0.2.50:80
+		tcp dport 8081 dnat to 192.0.2.51
+		tcp dport 8082 redirect to :90
+	}
+}
+`)
+
+	inNetns(t, ns, func() {
+		conn, err := nftables.New()
+		if err != nil {
+			t.Fatalf("netlink: %v", err)
+		}
+		tables, err := conn.ListTables()
+		if err != nil {
+			t.Fatalf("list tables: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "natcap" {
+				continue
+			}
+			chains, _ := conn.ListChainsOfTableFamily(tbl.Family)
+			for _, ch := range chains {
+				if ch.Table.Name != tbl.Name {
+					continue
+				}
+				rules, _ := conn.GetRules(tbl, ch)
+				for _, r := range rules {
+					var types []string
+					for _, e := range r.Exprs {
+						types = append(types, fmt.Sprintf("%T", e))
+						switch v := e.(type) {
+						case *expr.Immediate:
+							t.Logf("rule %d: immediate reg=%d data=%s", r.Handle, v.Register, hex.EncodeToString(v.Data))
+						case *expr.NAT:
+							t.Logf("rule %d: nat type=%d family=%d addrmin=%d addrmax=%d protomin=%d protomax=%d specified=%v",
+								r.Handle, v.Type, v.Family, v.RegAddrMin, v.RegAddrMax, v.RegProtoMin, v.RegProtoMax, v.Specified)
+						}
+					}
+					t.Logf("rule %d exprs: %v", r.Handle, types)
+				}
+			}
+		}
+	})
+}
