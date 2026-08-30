@@ -257,13 +257,31 @@ func cmpValue(field, data string) string {
 		if ip, ok := netip.AddrFromSlice(b); ok {
 			return ip.String()
 		}
-	case "protocol":
+	// The transport protocol, under both spellings: "protocol" is the
+	// payload load of the header byte, "l4proto" the meta key that reads
+	// the same thing. Only the two protocols whyopen models are named;
+	// anything else keeps its number rather than gaining a name this
+	// renderer would have to be trusted on.
+	case "protocol", "l4proto":
 		if len(b) == 1 {
 			switch b[0] {
 			case 6:
 				return "tcp"
 			case 17:
 				return "udp"
+			}
+		}
+	// nfproto is the address family rather than the protocol, by its
+	// AF_* number. firewalld puts it in front of its reverse-path rule
+	// (docs/decisions/0012), where "meta nfproto 0x0a" told a reader
+	// nothing.
+	case "nfproto":
+		if len(b) == 1 {
+			switch b[0] {
+			case 2:
+				return "ipv4"
+			case 10:
+				return "ipv6"
 			}
 		}
 	}

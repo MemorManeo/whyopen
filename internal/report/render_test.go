@@ -278,3 +278,30 @@ func TestRenderRuleShowsANativeDNAT(t *testing.T) {
 		t.Fatalf("RenderRule = %q, want the rewrite spelled out", got)
 	}
 }
+
+// `tcp dport 8080 dnat to ...` loads the protocol through the meta key
+// rather than as a payload, and that spelling used to render as
+// "l4proto 0x06", which tells a reader nothing they did not already have
+// to decode. It is the first line of --explain for every forwarded port.
+func TestRenderMetaProtocolKeysReadAsNames(t *testing.T) {
+	cases := []struct {
+		key, data, want string
+	}{
+		{"l4proto", "06", "l4proto tcp"},
+		{"l4proto", "11", "l4proto udp"},
+		{"nfproto", "0a", "nfproto ipv6"},
+		{"nfproto", "02", "nfproto ipv4"},
+		// A value with no name keeps its number: the renderer names what
+		// whyopen models and does not extrapolate past it.
+		{"l4proto", "01", "l4proto 0x01"},
+	}
+	for _, c := range cases {
+		rule := facts.Rule{Handle: 1, Exprs: []facts.Expr{
+			{Kind: facts.ExprMeta, Meta: &facts.MetaExpr{Key: c.key, Register: 1}},
+			{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: c.data}},
+		}}
+		if got := RenderRule(rule); got != c.want {
+			t.Errorf("%s %s rendered as %q, want %q", c.key, c.data, got, c.want)
+		}
+	}
+}
