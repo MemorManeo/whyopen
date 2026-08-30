@@ -1283,3 +1283,58 @@ func TestMetaIifRefusesWhenTheIndexIsUnknown(t *testing.T) {
 		t.Fatalf("out=%v, want unknown: whyopen does not know this interface's index", out)
 	}
 }
+
+// A bitwise operation is dst = (src & mask) ^ xor, and a rule that xors
+// nothing carries no xor at all. whyopen required mask and xor to be the
+// same length, so an absent one made it refuse the rule, and with it every
+// verdict below.
+//
+// This is what `ip saddr 10.0.0.0/8` compiles to in an inet table, which
+// is to say it is what a subnet match in an ordinary hand-written ruleset
+// looks like. The integration test for a hardening-guide chain is what
+// found it.
+func TestBitwiseWithNoXorIsNotARefusal(t *testing.T) {
+	rule := func(xor string) facts.Rule {
+		return facts.Rule{Handle: 101, Exprs: []facts.Expr{
+			{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "network", Offset: 12, Len: 4}},
+			{Kind: facts.ExprBitwise, Bitwise: &facts.BitwiseExpr{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: "ff000000", Xor: xor}},
+			{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: "0a000000"}},
+			{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+		}}
+	}
+	// The source is 198.51.100.7, so 10.0.0.0/8 does not cover it either
+	// way. What matters is that both forms decide, rather than one of them
+	// poisoning the rule.
+	for _, xor := range []string{"00000000", ""} {
+		if out, _ := MatchRule(testPacket(), rule(xor), nil); out != OutcomeNoMatch {
+			t.Errorf("xor %q: out = %v, want no-match", xor, out)
+		}
+	}
+
+	// And it still matches when it should: 198.51.100.0/24 covers the
+	// source, which is the half that would pass even with the operation
+	// wrong.
+	covering := facts.Rule{Handle: 102, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "network", Offset: 12, Len: 4}},
+		{Kind: facts.ExprBitwise, Bitwise: &facts.BitwiseExpr{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: "ffffff00"}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: "c6336400"}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, act := MatchRule(testPacket(), covering, nil); out != OutcomeMatch || act.Kind != "accept" {
+		t.Fatalf("out=%v act=%+v, want a match: 198.51.100.0/24 covers the source", out, act)
+	}
+}
+
+// A xor that is present but the wrong width is still a refusal: that is a
+// mismatch whyopen cannot make sense of, not an omission it can.
+func TestBitwiseWithAMismatchedXorStillRefuses(t *testing.T) {
+	rule := facts.Rule{Handle: 103, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "network", Offset: 12, Len: 4}},
+		{Kind: facts.ExprBitwise, Bitwise: &facts.BitwiseExpr{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: "ff000000", Xor: "00"}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: "0a000000"}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule, nil); out != OutcomeUnknown {
+		t.Fatalf("out = %v, want unknown", out)
+	}
+}

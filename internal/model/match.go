@@ -41,6 +41,18 @@ func MatchRule(pkt *Packet, r facts.Rule, sets []facts.Set) (Outcome, Action) {
 			src, ok := regs[e.Bitwise.SourceRegister]
 			mask, err1 := hex.DecodeString(e.Bitwise.Mask)
 			xor, err2 := hex.DecodeString(e.Bitwise.Xor)
+			// The operation is dst = (src & mask) ^ xor, so a rule that
+			// xors nothing carries no xor at all, which is not a mismatch
+			// to refuse: `ip saddr 10.0.0.0/8` in an inet table arrives
+			// exactly this way, and requiring the two to be the same
+			// length made whyopen refuse every subnet match in an
+			// ordinary hand-written ruleset, and with it every verdict
+			// below that rule. A xor that is present but a different
+			// width from the mask is still a refusal, because that is a
+			// shape whyopen cannot make sense of rather than one it can.
+			if len(xor) == 0 {
+				xor = make([]byte, len(mask))
+			}
 			if !ok || err1 != nil || err2 != nil || len(mask) != len(xor) || len(src) < len(mask) {
 				return OutcomeUnknown, act
 			}
