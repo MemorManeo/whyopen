@@ -7,24 +7,55 @@ the core plan so the reasoning survives.
 
 The v0.1 plan (`2026-08-29-whyopen-v0.1.md`) then consumed three of these
 entries: 3, 6 and 7, each marked below with what landed and what is left of
-it rather than deleted, so the reasoning survives that plan too. Everything
-unmarked is still queued.
+it rather than deleted, so the reasoning survives that plan too. v0.2 took
+entry 4, and v0.3 entry 1, marked the same way. Everything unmarked is
+still queued.
 
 Known gaps that motivate several of these are recorded separately in
 `docs/decisions/0002-known-gaps-and-follow-up.md`.
 
-## 1. Policy file and exit codes
+## 1. Policy file and exit codes (landed in v0.3)
 
 The piece that turns a one-off audit into a guardrail, and the reason the
-exit codes already exist.
+exit codes already exist. Everything this entry asked for is in:
+`whyopen.yaml` exactly as section 8 of the design spec drew it,
+`whyopen policy init`, exit 1 on a violation, exit 2 on unknowns when
+`fail_on_unknown` is set, and a stale allow entry reported without failing
+the run.
 
-- `whyopen.yaml` with a `zones.internet.allow` list and `fail_on_unknown`.
-- `whyopen policy init` generating it from the current state, so adoption is
-  one command plus an edit.
-- Exit 1 on a policy violation, exit 2 on unknown verdicts when
-  `fail_on_unknown` is set. Exit 0 and exit 3 are already wired.
-- A reachable port not in the allow list is a violation; an allowed port that
-  is not reachable is reported at info level and does not fail.
+It lives in `internal/policy` (`Load`, `Check`, `Init`, `Marshal`), pure
+over `[]model.Verdict` and importing nothing but the stdlib,
+`internal/model` and the YAML parser, so the whole subsystem tests without
+root or a kernel and needs no integration tier. `internal/model` gained
+nothing: what the kernel does and what the operator wanted stay in
+separate packages, which is the same separation that makes an `unknown`
+verdict trustworthy. `cmd/whyopen`'s `checkExitCode` now ranks the
+outcomes, an unreadable ruleset over a violation over an unknown, and
+`report.Policy` prints the block that gives every non-zero exit a visible
+reason.
+
+Two judgement calls worth recording. A generated policy sets
+`fail_on_unknown: true`, so on a host with unresolved ports the very next
+`check --policy` exits 2: a guardrail that ignores what it cannot see is a
+false green, and `policy init` names those ports in a comment so the
+failure is not a surprise. And `policy init` refuses to overwrite an
+existing file, unlike `collect -o`, because a policy carries human edits
+that a facts document does not.
+
+`github.com/goccy/go-yaml` is the first dependency whyopen has taken that
+is not the netlink stack. It was chosen over the ubiquitous
+`gopkg.in/yaml.v3` because that module is archived upstream and its last
+release is v3.0.1 from May 2022, while goccy is current and its `go.mod`
+declares no dependencies of its own, so the module graph grows by exactly
+one node.
+
+What is left: the allow list has no address family (`443/tcp` covers both)
+and no port ranges, `zones` has exactly one meaningful key because
+`model.InternetZone()` is the only zone whyopen models, and there is no
+implicit config discovery: without `--policy` no policy is consulted.
+Each of those is a deliberate refusal to invent a surface before someone
+needs it. Entry 2's `--json` will have to carry the policy result too, or
+a machine reader gets the verdicts without the judgement on them.
 
 ## 2. `--json` output
 
