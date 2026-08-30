@@ -307,6 +307,44 @@ open, not for ports nobody could account for. The file it generates sets
 `check --policy` exits 2. That is deliberate. A guardrail that ignores
 what it cannot see is a false green.
 
+## Compatibility
+
+1.0 means these are promises, and breaking one takes a major version.
+
+**The command line.** The subcommands, their flags, and above all the exit
+codes: 0 clean, 1 a policy violation, 2 unknown verdicts with
+`fail_on_unknown` set, 3 a tool error. Anything scripted against those
+keeps working.
+
+**The facts document.** Its `schema_version` is 1. It moves only when a
+reader needs new code to read a document safely: a field removed, renamed,
+or changed in meaning. Adding an optional field never moves it, so a
+reader must treat a field it does not find as "the collecting build did
+not record this", never as a fact about the host. whyopen reads every
+version up to its own and refuses a newer one. The rule and its reasoning
+are in
+[decision 0010](docs/decisions/0010-facts-schema-versioning.md).
+
+**The verdict document** written by `check --json` carries its own
+`schema_version`, on the same rule. It is a separate number from the facts
+document's: one describes what was collected, the other what was
+concluded.
+
+**The policy file** at `version: 1`, including which shapes are refused. A
+policy that whyopen accepts today it will accept at 1.x.
+
+What is deliberately **not** promised:
+
+- **The reason strings.** They are prose for a human at 2am and they get
+  reworded. Match on `result`, never on `reason`.
+- **The table layout.** Use `--json` if something other than a person is
+  reading it.
+- **The Go packages.** Everything is under `internal/` on purpose.
+- **That a given port keeps its verdict.** A better decoder turns an
+  `unknown` into an answer, and that is the tool improving rather than a
+  contract breaking. `unknown` means "whyopen could not tell", not "this
+  port is special", and nothing should be pinned to it.
+
 ### Redact before you share
 
 A facts document is a full inventory of the host: its hostname, every
@@ -322,11 +360,21 @@ it to a bug report** or pasting it anywhere outside your own infrastructure.
 
 There is a second, root-requiring tier under `test/integration/`, behind
 the `integration` build tag, which exercises whyopen against a real kernel
-in throwaway network namespaces and, in one test, against a real Docker
+in throwaway network namespaces and, in two tests, against a real Docker
 daemon. It mutates the host it runs on. Read
 [test/integration/README.md](test/integration/README.md) before running
-it.
+it. Every correctness claim in this README that could be checked against a
+kernel is checked by that tier, and CI fails if it skips rather than runs.
 
-## Design
+## Why it decides what it decides
 
-Design: docs/superpowers/specs/2026-08-28-whyopen-design.md
+[`docs/decisions/`](docs/decisions/) is the record: what was chosen, what
+was rejected, and what evidence settled it. Several of them exist because
+reading the kernel disagreed with reading the documentation, which is why
+the byte layouts in this tool were captured from a live kernel rather than
+taken from a header file.
+
+The original design is
+`docs/superpowers/specs/2026-08-28-whyopen-design.md`. It is kept as the
+origin rather than as current truth: where the decisions above disagree
+with it, they are what shipped.

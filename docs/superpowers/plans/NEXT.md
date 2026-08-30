@@ -1,5 +1,11 @@
 # whyopen: what comes next
 
+**The queue below is empty as of v1.0.0.** Every numbered entry landed and
+every smaller item is done or explicitly refused, each marked in place
+rather than deleted so the reasoning survives. What is genuinely still
+open, and what 1.0 deliberately shipped without, is the short list at the
+bottom under "After 1.0".
+
 The core plan (`2026-08-28-whyopen-core.md`) is complete: `whyopen collect`
 and `whyopen check` work against a real host. This file is the queue for the
 work after it, in the order the work is worth doing. Written at the end of
@@ -267,3 +273,32 @@ rushed into that tag; all three were closed before v0.2.0:
   workflow where a user attaches a facts document. Found while shipping xt
   recent decoding, whose own golden fixture predates the decoder and so
   could not benefit from it.
+
+## After 1.0
+
+Nothing here blocked 1.0, and each is here because closing it needs
+evidence or a user rather than a decision.
+
+- **`expr.Range`.** A numeric range (`tcp dport 1024-2048`) or an
+  interval-flagged set still reports `unknown`. Decision 0004's capture
+  found no evidence one was needed, and this project does not write a
+  decoder against a layout nobody has observed. Closing it starts with a
+  capture, the way 0003 and 0004 did.
+- **`xt recent --remove`.** The three `check_set` bit patterns were
+  captured from a live kernel; the fourth was not. The pattern the other
+  three follow would put it at 0x08, and that is an inference, which is
+  why the decoder refuses rather than guesses.
+- **The library patch belongs upstream.** `google/nftables` drops
+  `NFTA_HOOK_DEV` when it reads a chain back, which is why
+  `internal/collect/chaindev.go` exists. When that lands upstream, delete
+  the file and the exception in decision 0006 rather than keeping a second
+  source of the same truth.
+- **firewalld against the daemon.** Everything whyopen decodes for it was
+  captured from a firewalld-shaped ruleset applied by hand. That was
+  deliberate (the ruleset is what matters, not the daemon), but nobody has
+  run whyopen on a host where firewalld itself wrote the rules.
+- **A native expression whyopen cannot type keeps nothing.** Decision 0007
+  closed this for xt payloads. There is no equivalent opaque blob behind a
+  typed native expression, so the same fix does not apply, and what
+  whyopen does not decode is recorded as `ExprUnknown` with the type name.
+  Worth revisiting only if a real ruleset turns up where it matters.
