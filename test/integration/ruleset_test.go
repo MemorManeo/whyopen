@@ -880,7 +880,8 @@ table inet srv {
 }
 `)
 
-	vs := evaluate(collectIn(t, ns))
+	f := collectIn(t, ns)
+	vs := evaluate(f)
 	failed := false
 	for port, want := range map[uint16]string{
 		22:   "reachable", // in the port set
@@ -904,5 +905,38 @@ table inet srv {
 	// than a puzzle, which is what the firewalld job's census taught.
 	if failed {
 		t.Logf("ruleset:\n%s", nsRun(t, ns, "nft", "-a", "list", "ruleset"))
+		// And what whyopen made of it, expression by expression. The nft
+		// text says what the rule is; this says what whyopen read, and
+		// the gap between them is the bug.
+		for _, tbl := range f.Ruleset.Tables {
+			for _, ch := range tbl.Chains {
+				for _, r := range ch.Rules {
+					t.Logf("decoded %s/%s handle %d: %s", tbl.Name, ch.Name, r.Handle, describeExprs(r.Exprs))
+				}
+			}
+		}
 	}
+}
+
+// describeExprs is a diagnostic: the kind of each expression and the
+// fields that decide whether the evaluator can answer it.
+func describeExprs(exprs []facts.Expr) string {
+	var parts []string
+	for _, e := range exprs {
+		switch e.Kind {
+		case facts.ExprPayload:
+			parts = append(parts, fmt.Sprintf("payload(%s@%d,%d)", e.Payload.Base, e.Payload.Offset, e.Payload.Len))
+		case facts.ExprBitwise:
+			parts = append(parts, fmt.Sprintf("bitwise(len=%d mask=%q xor=%q)", e.Bitwise.Len, e.Bitwise.Mask, e.Bitwise.Xor))
+		case facts.ExprCmp:
+			parts = append(parts, fmt.Sprintf("cmp(%s reg=%d %q)", e.Cmp.Op, e.Cmp.Register, e.Cmp.Data))
+		case facts.ExprMeta:
+			parts = append(parts, fmt.Sprintf("meta(%s)", e.Meta.Key))
+		case facts.ExprUnknown:
+			parts = append(parts, "UNKNOWN("+e.Note+")")
+		default:
+			parts = append(parts, string(e.Kind))
+		}
+	}
+	return strings.Join(parts, " ")
 }
