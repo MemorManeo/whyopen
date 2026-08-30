@@ -804,3 +804,61 @@ func TestRecentRemoveResolves(t *testing.T) {
 			"empty, so --remove cannot match and the packet reaches the drop policy", v.Result, v.Reason)
 	}
 }
+
+// The census of a hand-written ruleset found nothing undecoded, which is
+// a claim about the collector and not about the answer a user gets. This
+// asks the question that matters: with the rules a hardening guide tells
+// people to write, does whyopen decide anything?
+//
+// An expression the collector reads happily can still be one the
+// evaluator cannot resolve, and a single unresolvable rule early in the
+// chain poisons every verdict below it. This is where that shows.
+func TestHandWrittenRulesetResolves(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	for _, port := range []string{"22", "8080", "3306", "9999"} {
+		listenIn(t, ns, "0.0.0.0", port)
+	}
+	applyNftRuleset(t, ns, `
+table inet srv {
+	set blocklist {
+		type ipv4_addr
+		flags interval
+		elements = { 192.0.2.0/24 }
+	}
+
+	chain input {
+		type filter hook input priority 0; policy drop;
+
+		ct state established,related accept
+		ct state invalid drop
+		iif lo accept
+		ip protocol icmp accept
+		ip saddr @blocklist drop
+		tcp dport { 22, 80, 443 } accept
+		tcp dport 8080 limit rate 10/minute accept
+		ip saddr 10.0.0.0/8 tcp dport 3306 accept
+		counter comment "fell through"
+	}
+}
+`)
+
+	vs := evaluate(collectIn(t, ns))
+	for port, want := range map[uint16]string{
+		22:   "reachable", // in the port set
+		8080: "reachable", // rate limited, which whyopen reads as transparent
+		3306: "filtered",  // only from 10/8, and the internet zone is not
+		9999: "filtered",  // nothing accepts it
+	} {
+		v := verdictFor(vs, port, "ip")
+		if v == nil {
+			t.Errorf("no verdict for %d", port)
+			continue
+		}
+		if v.Result != want {
+			t.Errorf("%d = %s (%s), want %s", port, v.Result, v.Reason, want)
+		}
+	}
+}
