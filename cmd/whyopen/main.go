@@ -407,11 +407,12 @@ func loadFacts(path string) (facts.Facts, int) {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", path, err)
 		return f, exitError
 	}
-	// A snapshot from an older build may carry payloads this build can
-	// decode and that one could not. Say so rather than quietly answering
-	// differently from what the document itself records.
+	// Where the document preserved the kernel's own bytes, this build
+	// decodes them, which can differ from what the collecting build
+	// recorded. Say so rather than quietly answering differently from what
+	// the document itself says.
 	if n := collect.Redecode(&f); n > 0 {
-		fmt.Fprintf(os.Stderr, "re-decoded %d expression(s) this build understands and the collecting build did not\n", n)
+		fmt.Fprintf(os.Stderr, "re-decoded %d expression(s) from the payloads this document carries; this build reads them differently than the build that collected it\n", n)
 	}
 	return f, exitOK
 }

@@ -10,10 +10,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"reflect"
 
 	"github.com/MemorManeo/whyopen/internal/facts"
 	"github.com/google/nftables/expr"
 	"github.com/google/nftables/xt"
+	"golang.org/x/sys/unix"
 )
 
 // xt conntrack state bits, from xt_conntrack.h and confirmed against a live
@@ -299,19 +301,21 @@ func decodeXtRaw(x *facts.XtExpr) bool {
 	return false
 }
 
-// Redecode re-runs whyopen's byte-level decoders over a facts document and
-// returns how many expressions it resolved that the collecting build could
-// not. It is what makes collect-once-evaluate-later hold across decoder
-// generations: a snapshot taken before whyopen understood an extension is
-// evaluated at the reading build's fidelity, as long as that snapshot
-// preserved the payload.
+// Redecode re-derives every xt expression a document preserved the payload
+// of, and returns how many it changed. It is what makes
+// collect-once-evaluate-later hold across decoder generations: one
+// document read by two builds differs exactly as their decoders differ.
 //
-// It only ever fills in what is missing. An expression the collector
-// already decoded keeps its own answer, because that build saw the live
-// kernel and this one is reading a file.
+// Where there is a payload, this build decodes it, even over an answer the
+// collecting build recorded. That is decision 0007's contract change and
+// it rests on one fact: the payload is what the collecting build saw, so a
+// reading build with a better decoder is better placed to read it, not
+// worse. Where there is no payload the collector's answer stands
+// untouched, because nothing can check it.
 func Redecode(f *facts.Facts) int {
 	n := 0
 	for ti := range f.Ruleset.Tables {
+		family := f.Ruleset.Tables[ti].Family
 		for ci := range f.Ruleset.Tables[ti].Chains {
 			for ri := range f.Ruleset.Tables[ti].Chains[ci].Rules {
 				exprs := f.Ruleset.Tables[ti].Chains[ci].Rules[ri].Exprs
@@ -319,7 +323,7 @@ func Redecode(f *facts.Facts) int {
 					if exprs[ei].Kind != facts.ExprXt || exprs[ei].Xt == nil {
 						continue
 					}
-					if decodeXtRaw(exprs[ei].Xt) {
+					if redecodeXt(exprs[ei].Xt, family) {
 						n++
 					}
 				}
@@ -327,6 +331,47 @@ func Redecode(f *facts.Facts) int {
 		}
 	}
 	return n
+}
+
+// redecodeXt rebuilds one xt expression from its preserved payload,
+// through the same library unmarshaler and the same conversion the
+// collector used, and reports whether anything about it changed.
+func redecodeXt(x *facts.XtExpr, family string) bool {
+	if x.Raw == "" {
+		return false
+	}
+	raw, err := hex.DecodeString(x.Raw)
+	if err != nil {
+		return false
+	}
+	info, err := xt.Unmarshal(x.Name, xtFamily(family), x.Rev, raw)
+	if err != nil {
+		// Not a decode whyopen can improve on. The document keeps what it
+		// had, which is the conservative answer and the same one it gave
+		// before the payload was preserved at all.
+		return false
+	}
+	fresh := convertXt(x.Kind, x.Name, x.Rev, info)
+	fresh.Raw = x.Raw
+	if reflect.DeepEqual(*fresh, *x) {
+		return false
+	}
+	*x = *fresh
+	return true
+}
+
+// xtFamily maps a facts table family to the one xt.Unmarshal takes, since
+// several extensions lay their payload out differently per family.
+func xtFamily(family string) xt.TableFamily {
+	switch family {
+	case "ip6":
+		return xt.TableFamily(unix.NFPROTO_IPV6)
+	case "inet":
+		return xt.TableFamily(unix.NFPROTO_INET)
+	case "netdev":
+		return xt.TableFamily(unix.NFPROTO_NETDEV)
+	}
+	return xt.TableFamily(unix.NFPROTO_IPV4)
 }
 
 // recentInfo decodes an xt recent match payload at the layout captured in

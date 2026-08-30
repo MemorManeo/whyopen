@@ -307,12 +307,22 @@ type XtExpr struct {
 	AddrType  *AddrTypeInfo  `json:"addrtype,omitempty"`
 	Recent    *RecentInfo    `json:"recent,omitempty"`
 	// Raw is the extension's payload exactly as the kernel sent it,
-	// lowercase hex, for every extension whose payload reaches whyopen as
-	// bytes. Without it a document records only that this build could not
-	// decode something, and a later build with a better decoder can make
-	// nothing of an older snapshot: see collect.Redecode. It is empty for
-	// an extension the nftables library typed before whyopen saw it, since
-	// re-marshalling one would record a payload whyopen never received.
+	// lowercase hex. Without it a document records only what the
+	// collecting build made of an extension, and a later build with a
+	// better decoder can make nothing of an older snapshot: see
+	// collect.Redecode, which re-derives every expression that has one.
+	//
+	// It is carried for every xt extension, including the ones the
+	// nftables library types before whyopen sees them. Those arrive
+	// through a netlink rule dump whyopen issues itself
+	// (docs/decisions/0007-preserving-xt-payloads.md), because the library
+	// consumes the bytes, and re-marshalling its parsed struct would
+	// record a payload whyopen never received rather than the one it did.
+	//
+	// It is empty in a document written before v0.6.0, and in one whose
+	// payload read failed. Both are handled the same way: without bytes
+	// there is nothing to re-derive from, and the collector's answer
+	// stands.
 	Raw string `json:"raw,omitempty"`
 }
 

@@ -7,6 +7,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/MemorManeo/whyopen/internal/collect"
+	"github.com/MemorManeo/whyopen/internal/facts"
 )
 
 // listenIn starts a listener bound to bindIP inside the namespace so the
@@ -562,5 +565,51 @@ table netdev guard {
 	if v.Result != "unknown" {
 		t.Fatalf("port 22 = %s (%s), want unknown: the arrival device is in the chain's list",
 			v.Result, v.Reason)
+	}
+}
+
+// The payload of an extension the nftables library types for us, which is
+// the half of "a facts document is not lossy" that v0.4.0 missed and
+// decision 0007 closes. The library consumes the NFTA_MATCH_INFO bytes of
+// a conntrack match, so whyopen recovers them from a rule dump it issues
+// itself, and this asserts that against a real kernel rather than against
+// bytes a test made up.
+func TestConntrackPayloadIsPreserved(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "iptables", "python3")
+
+	ns := newNetns(t)
+	listenIn(t, ns, "0.0.0.0", "8080")
+	nsRun(t, ns, "iptables", "-A", "INPUT", "-m", "conntrack",
+		"--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT")
+
+	f := collectIn(t, ns)
+	var found *facts.XtExpr
+	for _, tbl := range f.Ruleset.Tables {
+		for _, ch := range tbl.Chains {
+			for _, r := range ch.Rules {
+				for _, e := range r.Exprs {
+					if e.Kind == facts.ExprXt && e.Xt != nil && e.Xt.Name == "conntrack" {
+						found = e.Xt
+					}
+				}
+			}
+		}
+	}
+	if found == nil {
+		t.Fatal("no conntrack match in the collected ruleset")
+	}
+	if !found.Decoded || found.Conntrack == nil {
+		t.Fatalf("conntrack did not decode: %+v", found)
+	}
+	if found.Raw == "" {
+		t.Fatalf("conntrack carries no payload, so this document cannot be re-read by a later build: %+v", found)
+	}
+
+	// The payload and the decode have to be the same fact. Re-deriving
+	// from the bytes must reproduce exactly what the collector recorded,
+	// or one of the two is wrong.
+	if n := collect.Redecode(&f); n != 0 {
+		t.Errorf("re-deriving from the preserved payload changed %d expression(s), so the bytes and the decode disagree", n)
 	}
 }

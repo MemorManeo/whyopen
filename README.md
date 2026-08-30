@@ -29,10 +29,10 @@ extension that `ufw limit ssh` uses, and that build discarded the payload
 it could not read, so those two rules carry nothing to decode and whyopen
 still declines to guess about them. A current run against a live UFW host
 decodes them and resolves port 22, which the integration suite asserts
-against a real kernel. Snapshots taken from v0.4.0 on keep the payload of
-every extension whyopen cannot type, so a later build with a better
-decoder resolves them when it reads the document, and says on stderr how
-many it re-decoded. The verdicts above are as
+against a real kernel. Snapshots taken from v0.6.0 on keep the payload of
+every xt extension, whether whyopen decoded it or not, so a later build
+with a better decoder re-reads them from the document and says on stderr
+how many it read differently. The verdicts above are as
 collected, not edited to show what a fresh run would produce; only the owner
 names are generalised, as noted above, and the table shows nine of the
 thirty-nine rows.

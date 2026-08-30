@@ -13,6 +13,7 @@ import (
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 	"github.com/google/nftables/xt"
+	"golang.org/x/sys/unix"
 )
 
 // The DNAT values are the real ones captured from a Docker publish of
@@ -625,14 +626,31 @@ func TestRedecodeLeavesAnExtensionWithNoRawAlone(t *testing.T) {
 	}
 }
 
-func TestRedecodeDoesNotTouchWhatIsAlreadyDecoded(t *testing.T) {
+// With the payload present, the reading build decodes. The collecting
+// build's answer was preferred while the bytes were being thrown away,
+// because nothing could check it; now the bytes are what that build saw,
+// so a reading build with a better decoder is better placed, not worse.
+// This is decision 0007's contract change, and this document says 99
+// seconds while its own payload says 30.
+func TestRedecodeRederivesFromThePayloadOverTheCollectorsAnswer(t *testing.T) {
 	f := withXt(&facts.XtExpr{Kind: "match", Name: "recent", Rev: 1, Decoded: true, Raw: recentUpdateHex,
 		Recent: &facts.RecentInfo{Mode: "check_set", Seconds: 99}})
-	if n := Redecode(f); n != 0 {
-		t.Fatalf("Redecode improved %d expressions, want 0", n)
+	if n := Redecode(f); n != 1 {
+		t.Fatalf("Redecode changed %d expressions, want 1", n)
 	}
-	if got := f.Ruleset.Tables[0].Chains[0].Rules[0].Exprs[0].Xt.Recent.Seconds; got != 99 {
-		t.Errorf("seconds = %d, want the collector's own 99 left in place", got)
+	if got := f.Ruleset.Tables[0].Chains[0].Rules[0].Exprs[0].Xt.Recent.Seconds; got != 30 {
+		t.Errorf("seconds = %d, want 30 from the payload the document carries", got)
+	}
+}
+
+// Re-deriving a document this build collected changes nothing, so it says
+// nothing. The count is what check reports, and reporting work that
+// produced no difference would be noise.
+func TestRedecodeIsSilentWhenItAgreesWithTheCollector(t *testing.T) {
+	f := withXt(&facts.XtExpr{Kind: "match", Name: "recent", Rev: 1, Decoded: true, Raw: recentUpdateHex,
+		Recent: &facts.RecentInfo{Mode: "update", Seconds: 30, HitCount: 6, Name: "SSH"}})
+	if n := Redecode(f); n != 0 {
+		t.Fatalf("Redecode changed %d expressions, want 0: it agrees with the document", n)
 	}
 }
 
@@ -679,5 +697,53 @@ func TestConvertAddrTypeStillDecodesLocal(t *testing.T) {
 	}
 	if len(got[0].Xt.AddrType.DestTypes) != 1 || got[0].Xt.AddrType.DestTypes[0] != "local" {
 		t.Errorf("dest types = %v, want [local]", got[0].Xt.AddrType.DestTypes)
+	}
+}
+
+// An extension the nftables library types, which is where the payload was
+// being thrown away before decision 0007. The payload here is built with
+// the library's own marshaller, which proves the plumbing (bytes ->
+// unmarshal -> convert -> replace) and nothing about kernel fidelity; the
+// integration suite asserts that against a real kernel.
+func TestRedecodeRederivesATypedExtension(t *testing.T) {
+	// xt_conntrack.h: XT_CONNTRACK_STATE is 0x01, and a state bit is
+	// 1 << (ctinfo + 1), so IP_CT_ESTABLISHED (0) is 0x02. 0x08 would be
+	// NEW, which is what whyopen decodes it as.
+	info := &xt.ConntrackMtinfo3{ConntrackMtinfo2: xt.ConntrackMtinfo2{ConntrackMtinfoBase: xt.ConntrackMtinfoBase{
+		MatchFlags: 0x01,
+	}, StateMask: 0x02}}
+	raw, err := xt.Marshal(xt.TableFamily(unix.NFPROTO_IPV4), 3, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A document that carries the payload but a decode that disagrees with
+	// it: the states say "new" where the bytes say established.
+	f := withXt(&facts.XtExpr{
+		Kind: "match", Name: "conntrack", Rev: 3, Decoded: true, Raw: hex.EncodeToString(raw),
+		Conntrack: &facts.ConntrackInfo{MatchesState: true, States: []string{"new"}},
+	})
+	if n := Redecode(f); n != 1 {
+		t.Fatalf("Redecode changed %d expressions, want 1", n)
+	}
+	got := f.Ruleset.Tables[0].Chains[0].Rules[0].Exprs[0].Xt.Conntrack
+	if len(got.States) != 1 || got.States[0] != "established" {
+		t.Fatalf("states = %v, want [established] from the payload", got.States)
+	}
+}
+
+// A document from a build that kept no payload cannot be re-derived, and
+// must be left exactly as it was rather than guessed at.
+func TestRedecodeLeavesATypedExtensionWithNoPayloadAlone(t *testing.T) {
+	f := withXt(&facts.XtExpr{
+		Kind: "match", Name: "conntrack", Rev: 3, Decoded: true,
+		Conntrack: &facts.ConntrackInfo{MatchesState: true, States: []string{"new"}},
+	})
+	if n := Redecode(f); n != 0 {
+		t.Fatalf("Redecode changed %d expressions, want 0", n)
+	}
+	got := f.Ruleset.Tables[0].Chains[0].Rules[0].Exprs[0].Xt.Conntrack
+	if got.States[0] != "new" {
+		t.Errorf("states = %v, want the collector's own answer untouched", got.States)
 	}
 }

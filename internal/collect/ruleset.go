@@ -43,8 +43,9 @@ func Ruleset() (facts.Ruleset, []facts.Warning, error) {
 	// seeing every packet, which is what whyopen did before it could read
 	// them at all.
 	devs, devWarns := ChainDevices()
-	rs, warns, err := readRuleset(c, devs)
-	return rs, append(devWarns, warns...), err
+	payloads, payloadWarns := RulePayloads()
+	rs, warns, err := readRuleset(c, devs, payloads)
+	return rs, append(append(devWarns, payloadWarns...), warns...), err
 }
 
 // readRuleset walks a source and reports what it managed to read. Any
@@ -54,7 +55,7 @@ func Ruleset() (facts.Ruleset, []facts.Warning, error) {
 // and a confident "reachable". A chain removed by Docker between the list
 // call and the GetRules call is an ordinary live-host race, not an exotic
 // failure.
-func readRuleset(c rulesetSource, devices map[chainKey][]string) (facts.Ruleset, []facts.Warning, error) {
+func readRuleset(c rulesetSource, devices map[chainKey][]string, payloads map[ruleKey][]xtPayload) (facts.Ruleset, []facts.Warning, error) {
 	var warns []facts.Warning
 
 	tables, err := c.ListTables()
@@ -134,10 +135,14 @@ func readRuleset(c rulesetSource, devices map[chainKey][]string) (facts.Ruleset,
 				continue
 			}
 			for _, r := range rules {
-				fc.Rules = append(fc.Rules, facts.Rule{
-					Handle: r.Handle,
-					Exprs:  ConvertExprs(r.Exprs),
-				})
+				exprs := ConvertExprs(r.Exprs)
+				// The bytes behind every xt expression the library typed
+				// for us, which it consumed and whyopen would otherwise
+				// have nothing to hand a later build (decision 0007).
+				attachXtPayloads(exprs, payloads[ruleKey{
+					Family: uint8(t.Family), Table: t.Name, Chain: ch.Name, Handle: r.Handle,
+				}])
+				fc.Rules = append(fc.Rules, facts.Rule{Handle: r.Handle, Exprs: exprs})
 			}
 			ft.Chains = append(ft.Chains, fc)
 		}
