@@ -4,8 +4,12 @@ package collect
 
 import (
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/MemorManeo/whyopen/internal/facts"
 )
 
 func TestClassifyAddr(t *testing.T) {
@@ -55,6 +59,52 @@ func TestHostWarnsOnUnreadableSysctls(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("warnings %+v do not name unreadable sysctl %q", warns, rel)
+		}
+	}
+}
+
+// Forwarding is a per-device flag, so the collector has to read the device
+// files, not just the global toggle. lo is used because it is the one
+// interface every host running this test is guaranteed to have.
+func TestHostReadsPerInterfaceForwarding(t *testing.T) {
+	root := t.TempDir()
+	for rel, val := range map[string]string{
+		"sys/net/ipv4/ip_forward":          "0",
+		"sys/net/ipv6/conf/all/forwarding": "0",
+		"sys/net/ipv6/bindv6only":          "0",
+		"sys/net/ipv4/conf/lo/forwarding":  "1",
+		"sys/net/ipv6/conf/lo/forwarding":  "1",
+	} {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(val+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	h, warns := Host(root)
+	var lo *facts.Interface
+	for i := range h.Interfaces {
+		if h.Interfaces[i].Name == "lo" {
+			lo = &h.Interfaces[i]
+		}
+	}
+	if lo == nil {
+		t.Skip("no loopback interface on this host")
+	}
+	if !lo.IPv4Forwarding || !lo.IPv6Forwarding {
+		t.Errorf("lo forwarding = ipv4:%v ipv6:%v, want both true", lo.IPv4Forwarding, lo.IPv6Forwarding)
+	}
+	// An interface with no conf file is the normal case (ipv6 disabled, or
+	// a device that went away mid-read) and must not produce a warning:
+	// the value only ever widens what whyopen calls reachable, so failing
+	// to read one falls back to the global toggle and can never invent
+	// forwarding that is not there.
+	for _, w := range warns {
+		if strings.Contains(w.Message, "conf/") {
+			t.Errorf("per-interface read produced a warning: %s", w.Message)
 		}
 	}
 }

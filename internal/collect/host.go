@@ -73,6 +73,15 @@ func Host(procRoot string) (facts.Host, []facts.Warning) {
 	}
 	for _, i := range ifaces {
 		fi := facts.Interface{Name: i.Name, Index: i.Index, Up: i.Flags&net.FlagUp != 0}
+		// Per-device forwarding. Deliberately without a warning when it
+		// cannot be read: an interface legitimately has no ipv6 conf
+		// directory when ipv6 is off, and one can go away mid-read. The
+		// value only ever widens what whyopen calls reachable, so a failed
+		// read falls back to the global toggle and can never invent
+		// forwarding that is not there, which is not true of the global
+		// readings above.
+		fi.IPv4Forwarding, _ = readSysctlBool(procRoot, "sys/net/ipv4/conf/"+i.Name+"/forwarding")
+		fi.IPv6Forwarding, _ = readSysctlBool(procRoot, "sys/net/ipv6/conf/"+i.Name+"/forwarding")
 		addrs, err := i.Addrs()
 		if err != nil {
 			warns = append(warns, facts.Warning{

@@ -268,10 +268,10 @@ func evaluateAtDestination(f facts.Facts, zone Zone, ep Endpoint, family string,
 			// sysctl off the routing layer discards the packet before the
 			// forward hook runs, so no rule in that hook can make the
 			// endpoint reachable however permissive it is.
-			if sysctl, on := forwarding(f.Host.Sysctls, family); !on {
+			if why, on := forwarding(f.Host, c.Iface, family); !on {
 				v.Result = "filtered"
-				v.Reason = fmt.Sprintf("via %s: DNAT to %s:%d, but %s is 0, so the kernel never routes the packet on and it does not reach the forward hook",
-					c.IP, pre.DNAT.IP, pre.DNAT.Port, sysctl)
+				v.Reason = fmt.Sprintf("via %s: DNAT to %s:%d, but %s, so the kernel never routes the packet on and it does not reach the forward hook",
+					c.IP, pre.DNAT.IP, pre.DNAT.Port, why)
 				return v
 			}
 			outIface, ok := ifaceFor(f, pre.DNAT.IP)
@@ -294,15 +294,41 @@ func evaluateAtDestination(f facts.Facts, zone Zone, ep Endpoint, family string,
 	return finish(v, res, fmt.Sprintf("via %s: delivered locally, so the input hook decides", c.IP))
 }
 
-// forwarding names the sysctl that governs forwarding for the family and
-// reports whether it is on. Both values were collected from the start and
-// read nowhere, so a DNAT'd packet was reported as reaching the forward hook
-// even on a host whose kernel would never route it there.
-func forwarding(sc facts.Sysctls, family string) (sysctl string, on bool) {
+// forwarding reports whether the kernel would route a packet that arrived
+// on iface onward, and when it would not, says which readings decided
+// that so the operator knows every place to look.
+//
+// Forwarding is a per-device flag and the kernel consults the device the
+// packet arrived on, so reading only the global toggle reported a host
+// that forwards on one interface as forwarding nothing: the one direction
+// an exposure audit must never be wrong in. Writing the global toggle
+// propagates to every device and to the default for new ones, so the
+// global being on already implies the device's own and either is enough
+// here. That also keeps a document from a build that never collected the
+// per-interface values reading exactly as it did before.
+func forwarding(h facts.Host, iface, family string) (why string, on bool) {
+	globalName, globalOn := "net.ipv4.ip_forward", h.Sysctls.IPv4Forward
+	perIface := "net.ipv4.conf.%s.forwarding"
 	if family == "ip6" {
-		return "net.ipv6.conf.all.forwarding", sc.IPv6Forward
+		globalName, globalOn = "net.ipv6.conf.all.forwarding", h.Sysctls.IPv6Forward
+		perIface = "net.ipv6.conf.%s.forwarding"
 	}
-	return "net.ipv4.ip_forward", sc.IPv4Forward
+	if globalOn {
+		return "", true
+	}
+	if iface == "" {
+		return globalName + " is 0", false
+	}
+	ifaceName := fmt.Sprintf(perIface, iface)
+	for _, i := range h.Interfaces {
+		if i.Name != iface {
+			continue
+		}
+		if (family == "ip6" && i.IPv6Forwarding) || (family != "ip6" && i.IPv4Forwarding) {
+			return "", true
+		}
+	}
+	return globalName + " and " + ifaceName + " are both 0", false
 }
 
 func finish(v Verdict, res Result, how string) Verdict {

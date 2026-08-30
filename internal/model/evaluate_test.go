@@ -571,3 +571,58 @@ func TestStrongestCandidateWinsAndKeepsItsOwnReason(t *testing.T) {
 		})
 	}
 }
+
+// The global toggle is not the whole truth: forwarding is a per-device
+// flag, and a host can leave net.ipv4.ip_forward at 0 while enabling
+// net.ipv4.conf.eth0.forwarding on the interface the packet arrives on.
+// Reading only the global one reported such a host as filtered, which is
+// the one direction this tool must never be wrong in.
+func TestDNATForwardedWhenOnlyTheIngressInterfaceForwards(t *testing.T) {
+	f := hostFacts()
+	f.Host.Sysctls.IPv4Forward = false
+	f.Host.Interfaces[0].IPv4Forwarding = true // eth0, where 203.0.113.10 lives
+	filter := ufwFilter()
+	filter.Chains[2].Rules = []facts.Rule{acceptRule(12)}
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter, dockerNAT("0.0.0.0", 5432)}}
+	f.Docker = facts.Docker{Available: true, Containers: []facts.Container{{
+		ID: "c1", Name: "db-1",
+		Publishes: []facts.Publish{{HostIP: "0.0.0.0", HostPort: 5432,
+			ContainerIP: "172.20.0.2", ContainerPort: 5432, Proto: "tcp"}},
+	}}}
+
+	vs := Evaluate(f, InternetZone())
+	if len(vs) != 1 {
+		t.Fatalf("got %d verdicts, want 1: %+v", len(vs), vs)
+	}
+	if vs[0].Result != "reachable" {
+		t.Fatalf("result = %q (%s), want reachable: eth0 forwards even though the global toggle is off",
+			vs[0].Result, vs[0].Reason)
+	}
+}
+
+// Forwarding enabled on some other interface says nothing about the one
+// the packet arrives on.
+func TestDNATNotForwardedWhenOnlyAnotherInterfaceForwards(t *testing.T) {
+	f := hostFacts()
+	f.Host.Sysctls.IPv4Forward = false
+	f.Host.Interfaces[1].IPv4Forwarding = true // br-abc, not the ingress interface
+	filter := ufwFilter()
+	filter.Chains[2].Rules = []facts.Rule{acceptRule(12)}
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{filter, dockerNAT("0.0.0.0", 5432)}}
+	f.Docker = facts.Docker{Available: true, Containers: []facts.Container{{
+		ID: "c1", Name: "db-1",
+		Publishes: []facts.Publish{{HostIP: "0.0.0.0", HostPort: 5432,
+			ContainerIP: "172.20.0.2", ContainerPort: 5432, Proto: "tcp"}},
+	}}}
+
+	vs := Evaluate(f, InternetZone())
+	if vs[0].Result != "filtered" {
+		t.Fatalf("result = %q (%s), want filtered", vs[0].Result, vs[0].Reason)
+	}
+	// Both readings are what the operator has to change, so both are named.
+	for _, want := range []string{"net.ipv4.ip_forward", "net.ipv4.conf.eth0.forwarding"} {
+		if !strings.Contains(vs[0].Reason, want) {
+			t.Errorf("reason = %q, want it to name %s", vs[0].Reason, want)
+		}
+	}
+}

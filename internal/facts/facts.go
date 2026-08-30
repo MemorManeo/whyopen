@@ -37,6 +37,20 @@ type Interface struct {
 	Index     int    `json:"index"`
 	Up        bool   `json:"up"`
 	Addresses []Addr `json:"addresses"`
+	// Forwarding is this interface's own net.ipv4.conf.<name>.forwarding
+	// and net.ipv6.conf.<name>.forwarding. Forwarding is a per-device flag
+	// and the kernel consults the device the packet arrived on, so a host
+	// can leave the global toggle at 0 and still route what comes in here.
+	// Reading only the global one reported such a host as filtered, which
+	// is the one direction an exposure audit must never be wrong in.
+	//
+	// Writing the global toggle propagates to every device and to the
+	// default for new ones, so the global being on already implies these,
+	// and the evaluator takes either as forwarding. That also makes a
+	// document from a build that never collected these read exactly as it
+	// did before, rather than as a host that suddenly forwards nothing.
+	IPv4Forwarding bool `json:"ipv4_forwarding,omitempty"`
+	IPv6Forwarding bool `json:"ipv6_forwarding,omitempty"`
 }
 
 // Scope is one of: global, private, loopback, link-local, ula, multicast.

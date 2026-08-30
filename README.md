@@ -81,11 +81,13 @@ Known gaps that produce `unknown` today:
   `unknown` rather than being guessed at from the pattern the other three
   follow.
 
-One known gap points the other way, reporting `filtered` where the port may
-be open: whyopen reads only the global forwarding toggles
-(`net.ipv4.ip_forward`, `net.ipv6.conf.all.forwarding`), so a host that
-leaves those off but enables forwarding on one interface
-(`net.ipv4.conf.<if>.forwarding=1`) is reported as not forwarding at all.
+Forwarding is read per interface (`net.ipv4.conf.<if>.forwarding`) as well
+as globally, because the kernel consults the device a packet arrived on:
+a host that leaves `net.ipv4.ip_forward` at 0 and forwards on one
+interface really does forward, and used to be reported as filtered. That
+was the one known gap pointing the other way, reporting `filtered` where
+the port may be open, and there is no other known gap in that direction.
+If you find one, it is the most serious kind of bug this tool can have.
 
 ## Requirements
 
