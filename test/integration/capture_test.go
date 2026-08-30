@@ -482,10 +482,28 @@ table inet cap2 {
 		elements = { 0-1023 }
 	}
 
+	# The shapes that decide whether a wrapped end can be told apart from
+	# the sentinel below the first interval: one where a top interval sits
+	# beside an ordinary one, and one where the set also starts at zero, so
+	# key 0 would have to be both a start and an end.
+	set top_and_middle {
+		type inet_service
+		flags interval
+		elements = { 100-200, 1024-65535 }
+	}
+
+	set bottom_and_top {
+		type inet_service
+		flags interval
+		elements = { 0-100, 1024-65535 }
+	}
+
 	chain input {
 		type filter hook input priority 0; policy accept;
 		tcp dport @to_the_top accept
 		tcp dport @from_the_bottom accept
+		tcp dport @top_and_middle accept
+		tcp dport @bottom_and_top accept
 		tcp dport 1024-65535 accept
 	}
 }
