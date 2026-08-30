@@ -138,17 +138,24 @@ this entry said: a large share of the audience runs Raspberry Pi hardware.
 `cmd/whyopen` grew a `version` subcommand printing the version, commit and
 build date injected at link time.
 
-Outstanding. No tag has been pushed, so no release exists yet; the
-machinery was verified by running GoReleaser locally rather than by a real
-tag run. Three small gaps were found in review and deliberately deferred
-rather than rushed into the tag:
+Released: `v0.1.0` was tagged and pushed on 2026-08-29 and the workflow
+published both archives, both debs, both rpms and `checksums.txt`. Three
+small gaps were found in review and deliberately deferred rather than
+rushed into that tag; all three were closed before v0.2.0:
 
-- `wrap_in_directory` is not set on the archives, so a `tar.gz` extracts its
-  contents into the current directory instead of a named one.
-- The `version` subcommand has no `debug.ReadBuildInfo` fallback, so a
-  binary from `go install` prints `dev` rather than a version.
-- The release workflow does not run the tests before building. A tag that
-  fails CI would still publish.
+- `wrap_in_directory` is now set on the archives, so a `tar.gz` extracts
+  into a named directory instead of into the current one. Checked by
+  running a GoReleaser snapshot and listing the tarball, not by reading
+  the config.
+- The `version` subcommand now falls back to `debug.ReadBuildInfo`
+  (`resolveVersion` in `cmd/whyopen/main.go`): a binary from `go install`
+  reports the module version it was installed from, and one built in a
+  checkout reports the VCS revision and commit time. Whatever the linker
+  injected still wins, since a release build is told its own tag.
+- The release workflow now runs gofmt, both vet passes and the unit suite
+  before GoReleaser, so a tag that fails the unit tier no longer
+  publishes. The integration tier still runs only on master, where it
+  gates the commit a tag points at.
 
 ## Smaller items, roughly in value order
 
