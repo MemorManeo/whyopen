@@ -456,3 +456,87 @@ func TestCaptureRecentRemove(t *testing.T) {
 		t.Logf("recent-remove[%d] rev=%d len=%d hex=%s", i, p.rev, len(p.info), hex.EncodeToString(p.info))
 	}
 }
+
+// TestCaptureTopOfRangeInterval is the capture decision 0011 said this
+// would need. An interval reaching the top of the type's range has an
+// exclusive end of 65536, which does not fit in the two bytes an
+// inet_service key has, so whyopen refuses it rather than assume the end
+// wraps to zero and is distinguishable from the sentinel below the first
+// interval. This writes one and prints what the kernel actually stores.
+func TestCaptureTopOfRangeInterval(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft")
+
+	ns := newNetns(t)
+	applyNftRuleset(t, ns, `
+table inet cap2 {
+	set to_the_top {
+		type inet_service
+		flags interval
+		elements = { 1024-65535 }
+	}
+
+	set from_the_bottom {
+		type inet_service
+		flags interval
+		elements = { 0-1023 }
+	}
+
+	chain input {
+		type filter hook input priority 0; policy accept;
+		tcp dport @to_the_top accept
+		tcp dport @from_the_bottom accept
+		tcp dport 1024-65535 accept
+	}
+}
+`)
+
+	inNetns(t, ns, func() {
+		conn, err := nftables.New()
+		if err != nil {
+			t.Fatalf("netlink: %v", err)
+		}
+		tables, err := conn.ListTables()
+		if err != nil {
+			t.Fatalf("list tables: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "cap2" {
+				continue
+			}
+			sets, err := conn.GetSets(tbl)
+			if err != nil {
+				t.Fatalf("get sets: %v", err)
+			}
+			for _, s := range sets {
+				t.Logf("set %q interval=%v", s.Name, s.Interval)
+				elems, err := conn.GetSetElements(s)
+				if err != nil {
+					t.Logf("  elements: %v", err)
+					continue
+				}
+				for i, e := range elems {
+					t.Logf("  elem[%d] key=%s keyend=%s intervalend=%v",
+						i, hex.EncodeToString(e.Key), hex.EncodeToString(e.KeyEnd), e.IntervalEnd)
+				}
+			}
+			chains, _ := conn.ListChainsOfTableFamily(tbl.Family)
+			for _, ch := range chains {
+				if ch.Table.Name != tbl.Name {
+					continue
+				}
+				rules, _ := conn.GetRules(tbl, ch)
+				for _, r := range rules {
+					var types []string
+					for _, e := range r.Exprs {
+						types = append(types, fmt.Sprintf("%T", e))
+						if c, ok := e.(*expr.Cmp); ok {
+							t.Logf("rule %d: cmp op=%d data=%s", r.Handle, c.Op, hex.EncodeToString(c.Data))
+						}
+					}
+					t.Logf("rule %d exprs: %v", r.Handle, types)
+				}
+			}
+		}
+	})
+}

@@ -30,6 +30,37 @@ jobs:
       - name: test
         run: go test ./...
 
+  # firewalld gets a runner of its own. Starting it rewrites the host's
+  # whole ruleset, which would pull the ground out from under the
+  # integration job above, and the point of this job is that the daemon
+  # really is running rather than being imitated.
+  firewalld:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          check-latest: true
+      - name: install and start firewalld
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y firewalld nftables iproute2
+          sudo systemctl start firewalld
+          sudo firewall-cmd --state
+          sudo firewall-cmd --list-all
+      # A skip is not a pass here either: a missing daemon is a broken job,
+      # not a reason to report success.
+      - name: firewalld suite
+        run: |
+          sudo -E env "PATH=$PATH" go test -tags "integration firewalld" ./test/integration/ -v 2>&1 | tee /tmp/fw.log
+          if grep -q -- "--- SKIP" /tmp/fw.log; then
+            echo "firewalld tests skipped, which this job exists to prevent"
+            grep -- "--- SKIP" /tmp/fw.log
+            exit 1
+          fi
+          grep -q -- "--- PASS" /tmp/fw.log || (echo "no tests ran" && exit 1)
+
   integration:
     runs-on: ubuntu-24.04
     steps:
