@@ -18,6 +18,16 @@ jobs:
         with:
           go-version: '1.24'
           check-latest: true
+      # A tag that fails CI must not publish. Same three checks as ci.yml's
+      # unit job; the integration tier needs root and already gated master.
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: vet
+        run: |
+          go vet ./...
+          go vet -tags integration ./...
+      - name: test
+        run: go test ./...
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: '~> v2'
