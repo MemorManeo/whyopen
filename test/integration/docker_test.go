@@ -111,3 +111,63 @@ func TestRealDockerPublishIsReported(t *testing.T) {
 			sawForward, sawInput)
 	}
 }
+
+// The last fixture the original spec named and no test had: a dead
+// publish, a DNAT with nothing listening behind it. Every other test in
+// this suite starts a listener, because whyopen derives endpoints from
+// listening sockets and Docker publishes, so this is the one shape none of
+// them reaches: nginx listens on 80, and this publishes 9999.
+//
+// What it pins down is that whyopen reports the firewall path and does not
+// overstate it. The endpoint exists and is reachable, because that is a
+// claim about the rules: nothing between the internet and the container
+// stops the packet. Whether anything answers is a different question, and
+// whyopen cannot see into the container's own namespace to ask it. This is
+// exactly the gap `check --probe-from` exists to close, and it is why a
+// reachable verdict on a publish is not a promise that a service is there.
+func TestDeadPublishIsReportedWithoutOverstatingIt(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "docker")
+
+	exec.Command("ip", "link", "del", "whyopen1").Run()
+	run(t, "ip", "link", "add", "whyopen1", "type", "dummy")
+	t.Cleanup(func() { exec.Command("ip", "link", "del", "whyopen1").Run() })
+	run(t, "ip", "addr", "add", "203.0.113.11/32", "dev", "whyopen1")
+	run(t, "ip", "link", "set", "whyopen1", "up")
+
+	const name = "whyopen-dead-publish"
+	t.Cleanup(func() { exec.Command("docker", "rm", "-f", name).Run() })
+	exec.Command("docker", "rm", "-f", name).Run()
+	// 9999 is published and nothing in the container is listening on it.
+	run(t, "docker", "run", "-d", "--name", name,
+		"-p", "0.0.0.0:18081:9999", "nginx:alpine")
+
+	out, err := exec.Command(binaryPath, "collect").CombinedOutput()
+	if err != nil {
+		t.Fatalf("collect: %v\noutput:\n%s", err, out)
+	}
+	var f facts.Facts
+	if err := json.Unmarshal(out, &f); err != nil {
+		t.Fatalf("decode facts: %v\noutput:\n%s", err, out)
+	}
+
+	v := verdictFor(evaluate(f), 18081, "ip")
+	if v == nil {
+		t.Fatalf("no verdict for a publish with nothing behind it; publishes seen: %+v", f.Docker.Containers)
+	}
+	if v.Result != "reachable" {
+		t.Fatalf("dead publish reported %s, want reachable: the rules do not stop the packet, "+
+			"and whether anything answers is not something the ruleset can say: %s", v.Result, v.Reason)
+	}
+	// The reason has to name the rewrite, so a reader can see the packet is
+	// being sent into a container whose listeners whyopen cannot see.
+	if !strings.Contains(v.Reason, "DNAT") {
+		t.Errorf("reason = %q, want it to name the DNAT rewrite", v.Reason)
+	}
+	if v.DNAT == nil || v.DNAT.Port != 9999 {
+		t.Errorf("DNAT = %+v, want the rewrite to 9999 recorded", v.DNAT)
+	}
+	if v.Endpoint.Kind != "publish" {
+		t.Errorf("kind = %q, want publish: there is no socket on this host to have found", v.Endpoint.Kind)
+	}
+}

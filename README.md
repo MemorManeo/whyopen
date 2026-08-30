@@ -48,6 +48,11 @@ thirty-nine rows.
 - A Docker container published with `-p 127.0.0.1:5432:5432` shows up as
   `filtered` here because the bind address itself keeps it off the wire,
   before any nftables rule is even consulted.
+- `reachable` on a published port means the rules do not stop the packet,
+  not that something is listening inside the container. whyopen cannot see
+  into another network namespace, so a publish with nothing behind it
+  reads the same as a live one. `check --probe-from` is what tells the two
+  apart.
 
 ## What `unknown` means
 
