@@ -6,6 +6,7 @@ import (
 
 	"github.com/MemorManeo/whyopen/internal/model"
 	"github.com/MemorManeo/whyopen/internal/policy"
+	"github.com/MemorManeo/whyopen/internal/probe"
 )
 
 func TestPolicyNamesTheFamilyAndOwnerOfAViolation(t *testing.T) {
@@ -62,5 +63,32 @@ func TestPolicySaysSoOnACleanRun(t *testing.T) {
 	out := sb.String()
 	if !strings.Contains(out, "whyopen.yaml") || !strings.Contains(out, "allowed") {
 		t.Errorf("a clean run says nothing about the policy that passed:\n%s", out)
+	}
+}
+
+// A disagreement between the model and a probe is the most valuable thing
+// a probe run produces, so it prints above everything else and says which
+// way it went.
+func TestProbeReportsDisagreementsWithTheirDiagnosis(t *testing.T) {
+	var sb strings.Builder
+	Probe(&sb, []probe.Disagreement{{
+		Port: 8080, Proto: "tcp", Family: "ip", Modelled: "filtered", Probed: probe.StateOpen,
+		Diagnosis: "the model is missing something",
+	}}, "vantage.example")
+	out := sb.String()
+	for _, want := range []string{"8080/tcp", "filtered", "open", "missing something", "vantage.example"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// Agreement is worth one line: it is the run that proves the model right,
+// and silence would read as a probe that did not happen.
+func TestProbeSaysSoWhenTheModelAndRealityAgree(t *testing.T) {
+	var sb strings.Builder
+	Probe(&sb, nil, "vantage.example")
+	if !strings.Contains(sb.String(), "agree") {
+		t.Errorf("a run with no disagreement says nothing:\n%s", sb.String())
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/MemorManeo/whyopen/internal/facts"
 	"github.com/MemorManeo/whyopen/internal/model"
 	"github.com/MemorManeo/whyopen/internal/policy"
+	"github.com/MemorManeo/whyopen/internal/probe"
 )
 
 // SchemaVersion is the version of the verdict document JSON writes. It is
@@ -29,6 +30,11 @@ type JSONOptions struct {
 	// WithPath includes the ordered rule path of every verdict. It is the
 	// expensive half of the document and only --explain asks for it.
 	WithPath bool
+	// ProbeSource and Disagreements describe a probe run. The
+	// disagreements are the part a reader cannot derive from the verdicts,
+	// because they are about the verdicts being wrong.
+	ProbeSource   string
+	Disagreements []probe.Disagreement
 }
 
 // The output types are separate from the model's own. A verdict schema
@@ -42,6 +48,21 @@ type jsonDoc struct {
 	Verdicts      []jsonVerdict   `json:"verdicts"`
 	Warnings      []facts.Warning `json:"warnings,omitempty"`
 	Policy        *jsonPolicy     `json:"policy,omitempty"`
+	Probe         *jsonProbe      `json:"probe,omitempty"`
+}
+
+type jsonProbe struct {
+	Source        string             `json:"source"`
+	Disagreements []jsonDisagreement `json:"disagreements"`
+}
+
+type jsonDisagreement struct {
+	Port      uint16 `json:"port"`
+	Proto     string `json:"proto"`
+	Family    string `json:"family"`
+	Modelled  string `json:"modelled"`
+	Probed    string `json:"probed"`
+	Diagnosis string `json:"diagnosis"`
 }
 
 type jsonVerdict struct {
@@ -117,6 +138,16 @@ func JSON(w io.Writer, vs []model.Verdict, opt JSONOptions) error {
 				found = "nothing-listening"
 			}
 			doc.Policy.Stale = append(doc.Policy.Stale, jsonStale{Port: s.Entry.Port, Proto: s.Entry.Proto, Found: found})
+		}
+	}
+
+	if opt.ProbeSource != "" {
+		doc.Probe = &jsonProbe{Source: opt.ProbeSource, Disagreements: make([]jsonDisagreement, 0, len(opt.Disagreements))}
+		for _, d := range opt.Disagreements {
+			doc.Probe.Disagreements = append(doc.Probe.Disagreements, jsonDisagreement{
+				Port: d.Port, Proto: d.Proto, Family: d.Family,
+				Modelled: d.Modelled, Probed: string(d.Probed), Diagnosis: d.Diagnosis,
+			})
 		}
 	}
 

@@ -9,6 +9,7 @@ import (
 	"github.com/MemorManeo/whyopen/internal/facts"
 	"github.com/MemorManeo/whyopen/internal/model"
 	"github.com/MemorManeo/whyopen/internal/policy"
+	"github.com/MemorManeo/whyopen/internal/probe"
 )
 
 func decodeJSON(t *testing.T, vs []model.Verdict, opt JSONOptions) map[string]any {
@@ -159,5 +160,35 @@ func TestJSONNamesTheBuildAndHost(t *testing.T) {
 	doc := decodeJSON(t, nil, JSONOptions{Version: "0.4.0", Hostname: "gulfinson", Zone: "internet"})
 	if doc["whyopen"] != "0.4.0" || doc["hostname"] != "gulfinson" || doc["zone"] != "internet" {
 		t.Errorf("doc = %v, want the build, host and zone named", doc)
+	}
+}
+
+// A machine reading the verdicts needs the disagreements too: they are
+// the part that says the model itself was wrong, which no amount of
+// reading the verdicts would reveal.
+func TestJSONCarriesTheProbeDisagreements(t *testing.T) {
+	doc := decodeJSON(t, nil, JSONOptions{
+		ProbeSource: "ssh://vantage.example",
+		Disagreements: []probe.Disagreement{{
+			Port: 8080, Proto: "tcp", Family: "ip", Modelled: "filtered",
+			Probed: probe.StateOpen, Diagnosis: "the model is missing something",
+		}},
+	})
+	p, ok := doc["probe"].(map[string]any)
+	if !ok {
+		t.Fatalf("probe missing: %v", doc)
+	}
+	if p["source"] != "ssh://vantage.example" {
+		t.Errorf("source = %v", p["source"])
+	}
+	d := p["disagreements"].([]any)[0].(map[string]any)
+	if d["port"] != float64(8080) || d["modelled"] != "filtered" || d["probed"] != "open" {
+		t.Errorf("disagreement = %v", d)
+	}
+}
+
+func TestJSONOmitsTheProbeWhenNoneWasRun(t *testing.T) {
+	if _, present := decodeJSON(t, nil, JSONOptions{})["probe"]; present {
+		t.Error("probe present although none was run")
 	}
 }
