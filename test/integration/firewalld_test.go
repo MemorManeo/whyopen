@@ -69,12 +69,21 @@ func TestFirewalldEmitsNothingWhyopenCannotDecode(t *testing.T) {
 					switch {
 					case e.Kind == facts.ExprUnknown:
 						unknown[e.Note]++
+						// Where it is, so the construct can be found in
+						// the nft text dumped below and decoded against
+						// what firewalld actually wrote.
+						t.Logf("undecoded %s at %s/%s handle %d", e.Note, tbl.Name, ch.Name, r.Handle)
 					case e.Kind == facts.ExprXt && e.Xt != nil && !e.Xt.Decoded:
 						undecodedXt[e.Xt.Name]++
 					}
 				}
 			}
 		}
+	}
+	// The ruleset in nft's own words, so a failure here is a capture and
+	// not just a count: the handles logged above locate the construct.
+	if out, err := exec.Command("nft", "-a", "list", "ruleset").CombinedOutput(); err == nil {
+		t.Logf("nft -a list ruleset:\n%s", out)
 	}
 	t.Logf("firewalld ruleset: %d rules across %d tables", rules, len(f.Ruleset.Tables))
 	if rules == 0 {

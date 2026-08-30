@@ -53,7 +53,11 @@ jobs:
       # not a reason to report success.
       - name: firewalld suite
         run: |
-          sudo -E env "PATH=$PATH" go test -tags "integration firewalld" ./test/integration/ -v 2>&1 | tee /tmp/fw.log
+          # Only the firewalld tests. The rest of the suite runs in the
+          # integration job, and running it here would fail for a reason
+          # that is not about whyopen: starting firewalld rewrote the
+          # ruleset Docker had set up.
+          sudo -E env "PATH=$PATH" go test -tags "integration firewalld" ./test/integration/ -run TestFirewalld -v 2>&1 | tee /tmp/fw.log
           if grep -q -- "--- SKIP" /tmp/fw.log; then
             echo "firewalld tests skipped, which this job exists to prevent"
             grep -- "--- SKIP" /tmp/fw.log
