@@ -1411,3 +1411,61 @@ func TestPayloadReadsAPrefixOfAnIPv6Address(t *testing.T) {
 		t.Error("a prefix that does not cover the source matched anyway")
 	}
 }
+
+// `tcp flags syn` and its masked forms are common in hand-written chains,
+// and whyopen's synthetic packet is a fresh SYN by construction, which is
+// the same certainty that makes `ct state new` decidable.
+func tcpFlagsRule(mask, want string) facts.Rule {
+	exprs := []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 13, Len: 1}},
+	}
+	if mask != "" {
+		exprs = append(exprs, facts.Expr{Kind: facts.ExprBitwise,
+			Bitwise: &facts.BitwiseExpr{SourceRegister: 1, DestRegister: 1, Len: 1, Mask: mask}})
+	}
+	exprs = append(exprs,
+		facts.Expr{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: want}},
+		facts.Expr{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}})
+	return facts.Rule{Handle: 121, Exprs: exprs}
+}
+
+func TestTcpFlagsOnAFreshSyn(t *testing.T) {
+	// "tcp flags syn / fin,syn,rst,ack": mask 0x17, expect SYN.
+	if out, _ := MatchRule(testPacket(), tcpFlagsRule("17", "02"), nil); out != OutcomeMatch {
+		t.Error("the masked form did not match a fresh SYN")
+	}
+	// "tcp flags == syn", unmasked.
+	if out, _ := MatchRule(testPacket(), tcpFlagsRule("", "02"), nil); out != OutcomeMatch {
+		t.Error("the unmasked form did not match a fresh SYN")
+	}
+	// A rule demanding ACK cannot match the first packet of a connection.
+	if out, _ := MatchRule(testPacket(), tcpFlagsRule("17", "10"), nil); out != OutcomeNoMatch {
+		t.Error("a rule demanding ACK matched a fresh SYN")
+	}
+}
+
+// A UDP packet has no such byte, and answering as though it did would
+// resolve a rule against a field that is not there.
+func TestTcpFlagsRefusedForUDP(t *testing.T) {
+	p := testPacket()
+	p.Proto = "udp"
+	if out, _ := MatchRule(p, tcpFlagsRule("17", "02"), nil); out != OutcomeUnknown {
+		t.Fatalf("out = %v, want unknown: a UDP header has no flags byte there", out)
+	}
+}
+
+// Other transport-header fields stay refused: the flags byte is
+// answerable because the packet's flags are known, and the window size or
+// the data offset are not.
+func TestOtherTransportFieldsStayRefused(t *testing.T) {
+	for _, off := range []uint32{12, 14, 16} {
+		rule := facts.Rule{Handle: 122, Exprs: []facts.Expr{
+			{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: off, Len: 2}},
+			{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: "0000"}},
+			{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+		}}
+		if out, _ := MatchRule(testPacket(), rule, nil); out != OutcomeUnknown {
+			t.Errorf("transport@%d,2: out = %v, want unknown", off, out)
+		}
+	}
+}

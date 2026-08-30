@@ -18,8 +18,15 @@ func listenIn(t *testing.T, ns string, bindIP string, port string) {
 	t.Helper()
 	// nc is not universally present; python3 is, on every runner and on the
 	// development host. A background listener dies with the namespace.
+	// A bind address with a colon in it is IPv6, and an AF_INET socket
+	// cannot take one. With bindv6only off, a listener on :: answers for
+	// both families, which is how a test gets two verdicts per port.
+	family := "socket.AF_INET"
+	if strings.Contains(bindIP, ":") {
+		family = "socket.AF_INET6"
+	}
 	script := "import socket,sys\n" +
-		"s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n" +
+		"s=socket.socket(" + family + ");s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n" +
 		"s.bind(('" + bindIP + "'," + port + "));s.listen(1)\n" +
 		"sys.stderr.write('up\\n');sys.stderr.flush()\n" +
 		"import time;time.sleep(300)\n"
@@ -840,22 +847,32 @@ table inet filter {
 	}
 }
 
-// The census of a hand-written ruleset found nothing undecoded, which is
-// a claim about the collector and not about the answer a user gets. This
-// asks the question that matters: with the rules a hardening guide tells
-// people to write, does whyopen decide anything?
+// The full chain a hardening guide tells people to write, with the
+// verdicts asserted for both address families.
 //
-// An expression the collector reads happily can still be one the
-// evaluator cannot resolve, and a single unresolvable rule early in the
-// chain poisons every verdict below it. This is where that shows.
+// The trimmed version of this test found three gaps in one run, each of
+// which made whyopen answer unknown for every port on the host. The rules
+// left out of that first pass are back: tcp flags, an icmpv6 match, an
+// ifname set, udp, and a source-prefix drop. An expression the collector
+// reads happily can still be one the evaluator cannot answer, and only a
+// verdict shows the difference.
 func TestHandWrittenRulesetResolves(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "nft", "python3")
 
 	ns := newNetns(t)
-	for _, port := range []string{"22", "8080", "3306", "9999"} {
-		listenIn(t, ns, "0.0.0.0", port)
+	// A global IPv6 address, so the IPv6 verdicts are about the ruleset
+	// rather than about the host having nowhere to be reached. nodad
+	// skips duplicate address detection, which would leave it tentative.
+	nsRun(t, ns, "ip", "-6", "addr", "add", "2001:db8::10/64", "dev", nsSideName(ns), "nodad")
+
+	// Bound to ::, so with bindv6only off one listener answers for both
+	// families and every port below gets two verdicts.
+	for _, port := range []string{"22", "3306", "7777", "8080", "9999"} {
+		listenIn(t, ns, "::", port)
 	}
+	listenUDPIn(t, ns, "51820")
+
 	applyNftRuleset(t, ns, `
 table inet srv {
 	set blocklist {
@@ -864,16 +881,25 @@ table inet srv {
 		elements = { 192.0.2.0/24 }
 	}
 
+	set admin_ifaces {
+		type ifname
+		elements = { "wg0" }
+	}
+
 	chain input {
 		type filter hook input priority 0; policy drop;
 
 		ct state established,related accept
 		ct state invalid drop
-		iif lo accept
+		iif "lo" accept
 		ip protocol icmp accept
+		ip6 nexthdr icmpv6 accept
 		ip saddr @blocklist drop
+		iifname @admin_ifaces accept
 		tcp dport { 22, 80, 443 } accept
 		tcp dport 8080 limit rate 10/minute accept
+		tcp dport 7777 tcp flags syn / fin,syn,rst,ack accept
+		udp dport 51820 accept
 		ip saddr 10.0.0.0/8 tcp dport 3306 accept
 		counter comment "fell through"
 	}
@@ -883,31 +909,39 @@ table inet srv {
 	f := collectIn(t, ns)
 	vs := evaluate(f)
 	failed := false
-	for port, want := range map[uint16]string{
+	want := map[uint16]string{
 		22:   "reachable", // in the port set
+		7777: "reachable", // accepted only for a SYN, which is what whyopen models
 		8080: "reachable", // rate limited, which whyopen reads as transparent
 		3306: "filtered",  // only from 10/8, and the internet zone is not
 		9999: "filtered",  // nothing accepts it
-	} {
-		v := verdictFor(vs, port, "ip")
-		if v == nil {
-			t.Errorf("no verdict for %d", port)
-			failed = true
-			continue
-		}
-		if v.Result != want {
-			t.Errorf("%d = %s (%s), want %s", port, v.Result, v.Reason, want)
-			failed = true
+	}
+	for _, family := range []string{"ip", "ip6"} {
+		for port, expected := range want {
+			// The source-prefix rule is IPv4-only, so 3306 is filtered in
+			// both families for the same reason: nothing accepts it.
+			v := verdictFor(vs, port, family)
+			if v == nil {
+				t.Errorf("no %s verdict for %d", family, port)
+				failed = true
+				continue
+			}
+			if v.Result != expected {
+				t.Errorf("%s %d = %s (%s), want %s", family, port, v.Result, v.Reason, expected)
+				failed = true
+			}
 		}
 	}
+	if v := verdictFor(vs, 51820, "ip"); v == nil || v.Result != "reachable" {
+		t.Errorf("udp 51820 = %+v, want reachable", v)
+		failed = true
+	}
+
 	// A reason naming a rule handle is only useful next to the rule. The
-	// ruleset in nft's own words makes a failure here a capture rather
-	// than a puzzle, which is what the firewalld job's census taught.
+	// ruleset in nft's own words, and what whyopen made of it, turn a
+	// failure into a capture rather than a puzzle.
 	if failed {
 		t.Logf("ruleset:\n%s", nsRun(t, ns, "nft", "-a", "list", "ruleset"))
-		// And what whyopen made of it, expression by expression. The nft
-		// text says what the rule is; this says what whyopen read, and
-		// the gap between them is the bug.
 		for _, tbl := range f.Ruleset.Tables {
 			for _, ch := range tbl.Chains {
 				for _, r := range ch.Rules {
@@ -916,6 +950,19 @@ table inet srv {
 			}
 		}
 	}
+}
+
+// listenUDPIn is listenIn's counterpart. whyopen models udp endpoints and
+// nothing in this suite had ever given it one to model.
+func listenUDPIn(t *testing.T, ns string, port string) {
+	t.Helper()
+	script := "import socket,sys\n" +
+		"s=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM)\n" +
+		"s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n" +
+		"s.bind(('::'," + port + "))\n" +
+		"sys.stderr.write('up\\n');sys.stderr.flush()\n" +
+		"import time;time.sleep(300)\n"
+	startBackground(t, ns, "up", "python3", "-c", script)
 }
 
 // describeExprs is a diagnostic: the kind of each expression and the

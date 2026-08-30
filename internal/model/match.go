@@ -279,6 +279,13 @@ func payloadBytes(pkt *Packet, p *facts.PayloadExpr) ([]byte, bool) {
 			return []byte{byte(pkt.SrcPort >> 8), byte(pkt.SrcPort)}, true
 		case p.Offset == 2 && p.Len == 2:
 			return []byte{byte(pkt.DstPort >> 8), byte(pkt.DstPort)}, true
+		case p.Offset == 13 && p.Len == 1 && pkt.Proto == "tcp":
+			// The TCP flags byte. whyopen's packet is the first of a
+			// connection, so its flags are SYN and nothing else, which is
+			// the same certainty that makes ct state new decidable.
+			// `tcp flags syn` is common in hand-written chains and used to
+			// leave every verdict below it unknown.
+			return []byte{tcpFlagSyn}, true
 		}
 		return nil, false
 	}
@@ -358,6 +365,10 @@ func protoNumber(proto string) byte {
 	}
 	return 6
 }
+
+// tcpFlagSyn is the SYN bit of the TCP flags byte, and the only one set
+// on the packet whyopen models: a connection's first packet.
+const tcpFlagSyn = 0x02
 
 // ctStateNewBit is NF_CT_STATE_BIT(IP_CT_NEW): 1 << (IP_CT_NEW %
 // IP_CT_IS_REPLY + 1) = 1 << (2 % 3 + 1) = 0x8, per this machine's
