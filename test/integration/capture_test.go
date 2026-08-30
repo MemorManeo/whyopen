@@ -623,3 +623,65 @@ table inet cap3 {
 		}
 	})
 }
+
+// TestCaptureHandWrittenRuleset is a census, in the shape decision 0004
+// used for firewalld and the firewalld CI job then used against the real
+// daemon. Both of those covered a ruleset some *program* writes. This one
+// covers the third audience the README claims, a ruleset a person wrote,
+// and nothing has ever checked what that costs whyopen.
+//
+// The rules are the ones hardening guides actually tell people to write.
+// It asserts nothing about which of them decode: it prints the census, so
+// that what is missing is a list to work from rather than a surprise a
+// user reports.
+func TestCaptureHandWrittenRuleset(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft")
+
+	ns := newNetns(t)
+	applyNftRuleset(t, ns, `
+table inet srv {
+	set blocklist {
+		type ipv4_addr
+		flags interval
+		elements = { 192.0.2.0/24 }
+	}
+
+	set admin_ifaces {
+		type ifname
+		elements = { "wg0" }
+	}
+
+	chain input {
+		type filter hook input priority 0; policy drop;
+
+		ct state established,related accept
+		ct state invalid drop
+		iif lo accept
+		ip protocol icmp accept
+		ip6 nexthdr icmpv6 accept
+		ip saddr @blocklist drop
+		iifname @admin_ifaces accept
+		tcp dport { 22, 80, 443 } accept
+		udp dport 51820 accept
+		tcp dport 8080 limit rate 10/minute accept
+		tcp flags syn / fin,syn,rst,ack accept
+		meta skuid 0 accept
+		ip saddr 10.0.0.0/8 tcp dport 3306 accept
+		counter comment "fell through"
+	}
+}
+`)
+
+	census := captureFirewalldExprs(t, ns)
+	t.Logf("hand-written ruleset: %d rules", census.ruleCount)
+	for name, n := range census.known {
+		t.Logf("  decoded   %s x%d", name, n)
+	}
+	for name, n := range census.unknown {
+		t.Logf("  UNDECODED %s x%d", name, n)
+	}
+	if census.ruleCount == 0 {
+		t.Fatal("no rules read, so this census asserted nothing")
+	}
+}
