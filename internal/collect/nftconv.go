@@ -78,16 +78,20 @@ var addrTypeNames = []bitName{
 	{0x20, "multicast"},
 }
 
-// xt recent check_set bits, captured from a live kernel and recorded in
-// docs/decisions/0003-xt-recent-layout.md: --set sets 0x02, --update sets
-// 0x04, --rcheck sets 0x01. --remove's bit value was never captured (the
-// pattern the other three follow would put it at 0x08, but that is an
-// inference, not evidence), so whyopen does not guess a fourth pattern: a
-// --remove rule is left undecoded rather than assumed.
+// xt recent check_set bits, every one captured from a live kernel and
+// recorded in docs/decisions/0003-xt-recent-layout.md: --rcheck sets 0x01,
+// --set 0x02, --update 0x04, --remove 0x08. The fourth was missing from
+// the original capture and was left undecoded rather than inferred from
+// the pattern the other three follow; it was captured separately (CI run
+// 33318460615) and turned out to be exactly what that pattern predicted,
+// which is the argument for capturing rather than for inferring: the
+// refusal cost one CI run and the guess would have been unverified either
+// way.
 const (
 	xtRecentCheckBit  = 0x1
 	xtRecentSetBit    = 0x2
 	xtRecentUpdateBit = 0x4
+	xtRecentRemoveBit = 0x8
 )
 
 // xt recent payload layout at revision 1, captured from a live kernel and
@@ -145,6 +149,18 @@ func convertExpr(e expr.Any) facts.Expr {
 		}}
 	case *expr.Ct:
 		return convertCt(v)
+	case *expr.Range:
+		// Only a negated range arrives as one of these; the positive form
+		// is a pair of ordered comparisons (decision 0011). Both operators
+		// are decoded anyway: eq is the same expression with one field
+		// different, and refusing it would refuse something readable.
+		return facts.Expr{Kind: facts.ExprRange, Range: &facts.RangeExpr{
+			Op:       cmpOpName(v.Op),
+			Register: v.Register,
+			From:     hex.EncodeToString(v.FromData),
+			To:       hex.EncodeToString(v.ToData),
+		}}
+
 	case *expr.Lookup:
 		return convertLookup(v)
 	case *expr.Verdict:
@@ -378,9 +394,8 @@ func xtFamily(family string) xt.TableFamily {
 // docs/decisions/0003-xt-recent-layout.md: seconds and hit_count as
 // little-endian u32, a one-byte mode flag, a one-byte invert flag, then a
 // NUL-terminated name. Only revision 1 at the captured length decodes, and
-// only when check_set is one of the three exact bit patterns the capture
-// confirmed; any other value, including a --remove rule, is left undecoded
-// rather than guessed.
+// only when check_set is one of the four exact bit patterns a capture
+// confirmed; any other value is left undecoded rather than guessed.
 func recentInfo(rev uint32, data []byte) (*facts.RecentInfo, bool) {
 	if rev != 1 || len(data) != xtRecentRev1Len {
 		return nil, false
@@ -413,6 +428,8 @@ func recentModeName(checkSet byte) (string, bool) {
 		return "update", true
 	case xtRecentCheckBit:
 		return "rcheck", true
+	case xtRecentRemoveBit:
+		return "remove", true
 	}
 	return "", false
 }

@@ -89,19 +89,66 @@ func MatchRule(pkt *Packet, r facts.Rule, sets []facts.Set) (Outcome, Action) {
 			if !ok || len(reg) < len(data) {
 				return OutcomeUnknown, act
 			}
-			equal := bytes.Equal(reg[:len(data)], data)
+			// Registers hold big-endian values, so comparing equal-width
+			// slices byte by byte is the numeric comparison, for a port
+			// and for an address alike. That is what makes the ordered
+			// cases below correct without knowing which field this is.
+			cmp := bytes.Compare(reg[:len(data)], data)
 			switch e.Cmp.Op {
 			case "eq":
-				if !equal {
+				if cmp != 0 {
 					return OutcomeNoMatch, act
 				}
 			case "neq":
-				if equal {
+				if cmp == 0 {
+					return OutcomeNoMatch, act
+				}
+			// A positive range is a pair of these rather than a Range
+			// expression: `tcp dport 1024-2048` compiles to gte then lte
+			// on one register (docs/decisions/0011).
+			case "gte":
+				if cmp < 0 {
+					return OutcomeNoMatch, act
+				}
+			case "lte":
+				if cmp > 0 {
+					return OutcomeNoMatch, act
+				}
+			case "gt":
+				if cmp <= 0 {
+					return OutcomeNoMatch, act
+				}
+			case "lt":
+				if cmp >= 0 {
 					return OutcomeNoMatch, act
 				}
 			default:
-				// Ordered comparisons are used for ranges, which whyopen
-				// does not model yet.
+				// A comparison operator whyopen has no name for. The
+				// collector writes "unknown" for exactly that.
+				return OutcomeUnknown, act
+			}
+
+		case facts.ExprRange:
+			from, err1 := hex.DecodeString(e.Range.From)
+			to, err2 := hex.DecodeString(e.Range.To)
+			reg, ok := regs[e.Range.Register]
+			if err1 != nil || err2 != nil || !ok || len(from) != len(to) || len(reg) < len(from) {
+				return OutcomeUnknown, act
+			}
+			// Both bounds are inclusive, as `tcp dport != 3000-4000` means
+			// and as decision 0011's capture recorded.
+			v := reg[:len(from)]
+			inside := bytes.Compare(v, from) >= 0 && bytes.Compare(v, to) <= 0
+			switch e.Range.Op {
+			case "eq":
+				if !inside {
+					return OutcomeNoMatch, act
+				}
+			case "neq":
+				if inside {
+					return OutcomeNoMatch, act
+				}
+			default:
 				return OutcomeUnknown, act
 			}
 
@@ -323,8 +370,11 @@ func ctBytes(pkt *Packet, key string) ([]byte, bool) {
 // guessed no-match.
 func lookupMatch(reg []byte, lk *facts.LookupExpr, sets []facts.Set) (hit bool, ok bool) {
 	s, found := findSet(lk, sets)
-	if !found || s.Interval || s.IsMap || s.Concatenation || len(s.Elements) == 0 {
+	if !found || s.IsMap || s.Concatenation || len(s.Elements) == 0 {
 		return false, false
+	}
+	if s.Interval {
+		return intervalMatch(reg, lk, s)
 	}
 
 	keys := make([][]byte, 0, len(s.Elements))
@@ -358,6 +408,81 @@ func lookupMatch(reg []byte, lk *facts.LookupExpr, sets []facts.Set) (hit bool, 
 			break
 		}
 	}
+	if lk.Invert {
+		member = !member
+	}
+	return member, true
+}
+
+// intervalMatch tests membership in an interval set, whose elements are
+// not members but bounds: a start element, and an exclusive end element
+// flagged IntervalEnd. A single value is stored as an interval one wide,
+// so 8080 arrives as a start at 8080 and an end at 8081. The kernel also
+// returns a zero-keyed end closing the region below the first interval,
+// and it does not return them in any order worth relying on. All of that
+// is what decision 0011 captured from a live kernel.
+//
+// It refuses a start with no end above it. That is exactly what an
+// interval reaching the top of the type's range looks like, since its
+// exclusive end wraps to zero and becomes indistinguishable from the
+// sentinel, and reading it as running to the top would be inventing a
+// shape nobody has observed.
+func intervalMatch(reg []byte, lk *facts.LookupExpr, s facts.Set) (hit bool, ok bool) {
+	type bound struct {
+		key []byte
+		end bool
+	}
+	bounds := make([]bound, 0, len(s.Elements))
+	keyLen := -1
+	for _, e := range s.Elements {
+		if e.Val != "" || e.KeyEnd != "" {
+			// A map element, or the other interval representation the
+			// kernel has and decision 0011 did not observe.
+			return false, false
+		}
+		key, err := hex.DecodeString(e.Key)
+		if err != nil {
+			return false, false
+		}
+		if keyLen == -1 {
+			keyLen = len(key)
+		} else if len(key) != keyLen {
+			return false, false
+		}
+		bounds = append(bounds, bound{key: key, end: e.IntervalEnd})
+	}
+	if len(reg) < keyLen {
+		return false, false
+	}
+	slices.SortFunc(bounds, func(a, b bound) int { return bytes.Compare(a.key, b.key) })
+
+	v := reg[:keyLen]
+	member := false
+	var start []byte
+	for _, b := range bounds {
+		if !b.end {
+			if start != nil {
+				// Two starts with no end between them is not a shape
+				// whyopen has seen.
+				return false, false
+			}
+			start = b.key
+			continue
+		}
+		if start == nil {
+			// The sentinel below the first interval, or the end of a
+			// region that was never opened. Neither says anything.
+			continue
+		}
+		if bytes.Compare(v, start) >= 0 && bytes.Compare(v, b.key) < 0 {
+			member = true
+		}
+		start = nil
+	}
+	if start != nil {
+		return false, false
+	}
+
 	if lk.Invert {
 		member = !member
 	}

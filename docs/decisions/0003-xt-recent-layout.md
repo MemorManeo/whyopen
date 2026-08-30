@@ -182,3 +182,33 @@ captured.
 - This is one kernel, one iptables version, one revision. A different
   kernel or a `--mask` argument narrower than all-ones is out of scope for
   this record.
+
+## Update (v1.1): --remove captured
+
+The fourth `check_set` bit was captured in CI (run `33318460615`, job
+`integration`, `TestCaptureRecentRemove`) from two rules,
+`iptables -m recent --remove --name SSH` and the same with `--name OTHER`,
+so the mode bits could be told apart from the name bytes:
+
+```
+0000000000000000 0800 53534800554c54... (SSH)
+0000000000000000 0800 4f544845520054... (OTHER)
+```
+
+`--remove` is `0x08`, at the same offset and in the same layout as the
+other three, and the payload carries neither seconds nor hit count, which
+is what `--remove` takes on the command line.
+
+That is exactly the value this record declined to assume, and the outcome
+is worth stating plainly rather than quietly: the inference would have
+been right. It was still right to refuse it. The cost of refusing was one
+CI run and an `unknown` verdict on a rule shape nobody had reported; the
+cost of guessing wrong would have been a confident verdict on a rule
+whyopen had never seen, which is the failure this whole project is built
+to avoid. A guess that happens to be correct is not evidence, and there
+was no way to know which kind it was without the capture.
+
+whyopen decodes all four modes as of v1.1. The evaluator already modelled
+`remove` (on whyopen's synthetic first-connection packet the list is
+empty, so there is nothing to remove and the match cannot hit), so nothing
+in the model changed.

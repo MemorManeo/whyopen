@@ -807,3 +807,238 @@ func TestNativeCtStateBraceListNewMatches(t *testing.T) {
 		t.Fatalf("out=%v act=%+v, want match/accept: a new SYN is state new", out, act)
 	}
 }
+
+// A positive range is not a Range expression: the kernel compiles
+// `tcp dport 1024-2048` to two ordered comparisons on the same register
+// (docs/decisions/0011-ranges-and-interval-sets.md). whyopen decoded them
+// as gte and lte from the start and then refused them in the evaluator,
+// which is why the commonest range shape reported unknown.
+func rangeRule(lo, hi string) facts.Rule {
+	return facts.Rule{Handle: 31, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "gte", Register: 1, Data: lo}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "lte", Register: 1, Data: hi}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+}
+
+func TestOrderedComparisonsResolveARange(t *testing.T) {
+	const lo, hi = "0400", "0800" // 1024 and 2048
+	cases := []struct {
+		port uint16
+		want Outcome
+	}{
+		{1023, OutcomeNoMatch},
+		{1024, OutcomeMatch}, // inclusive at both ends
+		{1500, OutcomeMatch},
+		{2048, OutcomeMatch},
+		{2049, OutcomeNoMatch},
+	}
+	for _, c := range cases {
+		p := testPacket()
+		p.DstPort = c.port
+		out, act := MatchRule(p, rangeRule(lo, hi), nil)
+		if out != c.want {
+			t.Errorf("port %d: out = %v, want %v", c.port, out, c.want)
+		}
+		if c.want == OutcomeMatch && act.Kind != "accept" {
+			t.Errorf("port %d: act = %+v, want accept", c.port, act)
+		}
+	}
+}
+
+// The register holds a big-endian value, so a byte-wise comparison is the
+// numeric one only if it is done over the full width. A port above 255
+// exercises that: 0x0100 is greater than 0x00ff, and a comparison that
+// looked at one byte would get it backwards.
+func TestOrderedComparisonIsWidthCorrect(t *testing.T) {
+	p := testPacket()
+	p.DstPort = 256 // 0x0100
+	if out, _ := MatchRule(p, rangeRule("00ff", "0200"), nil); out != OutcomeMatch {
+		t.Fatalf("out = %v, want match: 256 is between 255 and 512", out)
+	}
+	p.DstPort = 255 // 0x00ff
+	if out, _ := MatchRule(p, rangeRule("0100", "0200"), nil); out != OutcomeNoMatch {
+		t.Fatalf("out = %v, want no match: 255 is below 256", out)
+	}
+}
+
+func TestStrictOrderedComparisons(t *testing.T) {
+	rule := func(op, data string) facts.Rule {
+		return facts.Rule{Handle: 32, Exprs: []facts.Expr{
+			{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+			{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: op, Register: 1, Data: data}},
+			{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+		}}
+	}
+	cases := []struct {
+		op   string
+		port uint16
+		want Outcome
+	}{
+		{"gt", 1024, OutcomeNoMatch}, // not greater than itself
+		{"gt", 1025, OutcomeMatch},
+		{"lt", 1024, OutcomeNoMatch},
+		{"lt", 1023, OutcomeMatch},
+	}
+	for _, c := range cases {
+		p := testPacket()
+		p.DstPort = c.port
+		if out, _ := MatchRule(p, rule(c.op, "0400"), nil); out != c.want {
+			t.Errorf("%s 1024 with port %d: out = %v, want %v", c.op, c.port, out, c.want)
+		}
+	}
+}
+
+func rangeExprRule(op, from, to string) facts.Rule {
+	return facts.Rule{Handle: 33, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+		{Kind: facts.ExprRange, Range: &facts.RangeExpr{Op: op, Register: 1, From: from, To: to}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+}
+
+// The bounds are inclusive, which is what `tcp dport != 3000-4000` means
+// and what the capture in decision 0011 recorded.
+func TestRangeExpressionNeq(t *testing.T) {
+	cases := map[uint16]Outcome{
+		2999: OutcomeMatch,   // outside, so a neq range matches
+		3000: OutcomeNoMatch, // the lower bound is inside the range
+		3500: OutcomeNoMatch,
+		4000: OutcomeNoMatch, // and so is the upper
+		4001: OutcomeMatch,
+	}
+	for port, want := range cases {
+		p := testPacket()
+		p.DstPort = port
+		if out, _ := MatchRule(p, rangeExprRule("neq", "0bb8", "0fa0"), nil); out != want {
+			t.Errorf("port %d: out = %v, want %v", port, out, want)
+		}
+	}
+}
+
+func TestRangeExpressionEq(t *testing.T) {
+	cases := map[uint16]Outcome{
+		21: OutcomeNoMatch,
+		22: OutcomeMatch,
+		60: OutcomeMatch,
+		80: OutcomeMatch,
+		81: OutcomeNoMatch,
+	}
+	for port, want := range cases {
+		p := testPacket()
+		p.DstPort = port
+		if out, _ := MatchRule(p, rangeExprRule("eq", "0016", "0050"), nil); out != want {
+			t.Errorf("port %d: out = %v, want %v", port, out, want)
+		}
+	}
+}
+
+// Anything about a range whyopen cannot read is refused, not approximated:
+// a register narrower than the bounds, bounds of different widths, or an
+// operator it has no name for.
+func TestRangeExpressionRefusals(t *testing.T) {
+	for _, r := range []*facts.RangeExpr{
+		{Op: "eq", Register: 1, From: "0016", To: "50"},    // mismatched widths
+		{Op: "gte", Register: 1, From: "0016", To: "0050"}, // not an operator a range carries
+		{Op: "eq", Register: 1, From: "zz", To: "0050"},    // not hex
+		{Op: "eq", Register: 9, From: "0016", To: "0050"},  // a register nothing wrote
+	} {
+		rule := facts.Rule{Handle: 34, Exprs: []facts.Expr{
+			{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+			{Kind: facts.ExprRange, Range: r},
+			{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+		}}
+		p := testPacket()
+		p.DstPort = 22
+		if out, _ := MatchRule(p, rule, nil); out != OutcomeUnknown {
+			t.Errorf("range %+v: out = %v, want unknown", r, out)
+		}
+	}
+}
+
+// intervalSet is what the kernel returns for `elements = { 100-200, 8080 }`,
+// in the shape decision 0011 captured: a start element and an exclusive
+// end element flagged IntervalEnd, a single value stored as an interval one
+// wide, a zero sentinel closing the region below the first interval, and
+// all of it in descending order, because the order is not something to
+// rely on.
+func intervalSet() facts.Set {
+	return facts.Set{Name: "ports", Interval: true, Elements: []facts.SetElement{
+		{Key: "1f91", IntervalEnd: true}, // 8081
+		{Key: "1f90"},                    // 8080
+		{Key: "00c9", IntervalEnd: true}, // 201
+		{Key: "0064"},                    // 100
+		{Key: "0000", IntervalEnd: true}, // the sentinel
+	}}
+}
+
+func lookupRule(set string) facts.Rule {
+	return facts.Rule{Handle: 51, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+		{Kind: facts.ExprLookup, Lookup: &facts.LookupExpr{SourceRegister: 1, Set: set}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+}
+
+func TestIntervalSetMembership(t *testing.T) {
+	cases := map[uint16]Outcome{
+		99:   OutcomeNoMatch,
+		100:  OutcomeMatch, // the start is inclusive
+		150:  OutcomeMatch,
+		200:  OutcomeMatch, // and the end element is exclusive, so 200 is in
+		201:  OutcomeNoMatch,
+		8079: OutcomeNoMatch,
+		8080: OutcomeMatch, // a single value is an interval one wide
+		8081: OutcomeNoMatch,
+	}
+	for port, want := range cases {
+		p := testPacket()
+		p.DstPort = port
+		if out, _ := MatchRule(p, lookupRule("ports"), []facts.Set{intervalSet()}); out != want {
+			t.Errorf("port %d: out = %v, want %v", port, out, want)
+		}
+	}
+}
+
+// An interval whose upper bound is the top of the type's range has an
+// exclusive end that wraps to zero, which is indistinguishable from the
+// sentinel and leaves a start with nothing above it. That shape was never
+// captured, so it is refused rather than read as running to the top.
+func TestIntervalSetRefusesADanglingStart(t *testing.T) {
+	s := facts.Set{Name: "ports", Interval: true, Elements: []facts.SetElement{
+		{Key: "0000", IntervalEnd: true},
+		{Key: "0400"}, // 1024, with no end above it
+	}}
+	p := testPacket()
+	p.DstPort = 2000
+	if out, _ := MatchRule(p, lookupRule("ports"), []facts.Set{s}); out != OutcomeUnknown {
+		t.Fatalf("out = %v, want unknown: the interval has no end whyopen has seen", out)
+	}
+}
+
+// The other representation the kernel has for an interval, a key with an
+// explicit end, was not observed and is not guessed at.
+func TestIntervalSetRefusesAKeyEndRepresentation(t *testing.T) {
+	s := facts.Set{Name: "ports", Interval: true, Elements: []facts.SetElement{
+		{Key: "0064", KeyEnd: "00c8"},
+	}}
+	p := testPacket()
+	p.DstPort = 150
+	if out, _ := MatchRule(p, lookupRule("ports"), []facts.Set{s}); out != OutcomeUnknown {
+		t.Fatalf("out = %v, want unknown", out)
+	}
+}
+
+// A flat set is still a flat set: adding intervals must not change how the
+// membership test whyopen already had behaves.
+func TestFlatSetStillMatchesExactly(t *testing.T) {
+	s := facts.Set{Name: "ports", Elements: []facts.SetElement{{Key: "0016"}, {Key: "0050"}}}
+	for port, want := range map[uint16]Outcome{22: OutcomeMatch, 80: OutcomeMatch, 443: OutcomeNoMatch} {
+		p := testPacket()
+		p.DstPort = port
+		if out, _ := MatchRule(p, lookupRule("ports"), []facts.Set{s}); out != want {
+			t.Errorf("port %d: out = %v, want %v", port, out, want)
+		}
+	}
+}

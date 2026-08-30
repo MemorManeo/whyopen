@@ -94,6 +94,10 @@ func TestConvertUnknownXtIsMarkedUndecoded(t *testing.T) {
 const (
 	recentSetHex    = "0000000000000000020053534800554c54000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000"
 	recentUpdateHex = "1e00000006000000040053534800554c54000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000"
+	// recent[3], `iptables -m recent --remove --name SSH`, captured in CI
+	// run 33318460615 and recorded in decision 0003's v1.1 update. It is
+	// the fourth check_set pattern, the one 0003 refused to infer.
+	recentRemoveHex = "0000000000000000080053534800554c54000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000"
 	// recent[2], `iptables -m recent --rcheck --seconds 60 --name OTHER`.
 	recentRcheckHex = "3c0000000000000001004f544845520054000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000"
 )
@@ -143,21 +147,26 @@ func TestConvertRecentRcheck(t *testing.T) {
 	}
 }
 
-// --remove's check_set bit value was never captured (docs/decisions/0003
-// only confirms 0x01, 0x02 and 0x04); the pattern the other three follow
-// would put it at 0x08, but that is an inference, not evidence. A payload
-// otherwise shaped like a real capture but carrying that unconfirmed byte
-// must stay undecoded rather than assume the pattern holds.
+// A check_set value no capture has confirmed must stay undecoded, however
+// plausible it looks. This test used to use 0x08 as its example, on the
+// grounds that --remove had never been captured; 0x08 is captured now
+// (decision 0003's v1.1 update), so the example moved to 0x10, the next
+// bit up, and to a combination of two confirmed bits. Both are shapes the
+// decoder has never seen, and the point of the test is that it refuses
+// them rather than reasoning about which one a kernel might mean.
 func TestConvertRecentUnconfirmedCheckSetStaysUndecoded(t *testing.T) {
-	data, err := hex.DecodeString(recentSetHex)
-	if err != nil {
-		t.Fatalf("decode hex: %v", err)
-	}
-	data[8] = 0x08
-	info := xt.Unknown(data)
-	got := ConvertExprs([]expr.Any{&expr.Match{Name: "recent", Rev: 1, Info: &info}})
-	if got[0].Xt.Decoded {
-		t.Fatalf("check_set 0x08 decoded as %+v, want undecoded: that bit value was never captured", got[0].Xt)
+	for _, checkSet := range []byte{0x10, 0x06} {
+		data, err := hex.DecodeString(recentSetHex)
+		if err != nil {
+			t.Fatalf("decode hex: %v", err)
+		}
+		data[8] = checkSet
+		info := xt.Unknown(data)
+		got := ConvertExprs([]expr.Any{&expr.Match{Name: "recent", Rev: 1, Info: &info}})
+		if got[0].Xt.Decoded {
+			t.Fatalf("check_set %#x decoded as %+v, want undecoded: that value was never captured",
+				checkSet, got[0].Xt)
+		}
 	}
 }
 
@@ -203,13 +212,16 @@ func TestConvertNativeExprs(t *testing.T) {
 // 0004) resolve as an unconditional accept. expr.Lookup used to stand in
 // here too, before it grew a decoder in v0.2 (see TestConvertLookup*
 // below); expr.Fib takes its place as a second still-genuinely-unhandled
-// type.
+// type. expr.Range left this list too, in v1.1: decision 0011 captured
+// what one actually contains and it is decoded now. expr.Quota replaced
+// it, and the lesson is the same one twice over, that this test's
+// examples are only examples and go stale as decoders land.
 func TestConvertUnhandledExpressionIsUnknown(t *testing.T) {
 	got := ConvertExprs([]expr.Any{
-		&expr.Range{Register: 1},
+		&expr.Quota{Bytes: 1000},
 		&expr.Fib{Register: 1, ResultOIFNAME: true},
 	})
-	for i, want := range []string{"*expr.Range", "*expr.Fib"} {
+	for i, want := range []string{"*expr.Quota", "*expr.Fib"} {
 		if got[i].Kind != facts.ExprUnknown {
 			t.Fatalf("expr %d kind = %q, want %q", i, got[i].Kind, facts.ExprUnknown)
 		}
@@ -745,5 +757,53 @@ func TestRedecodeLeavesATypedExtensionWithNoPayloadAlone(t *testing.T) {
 	got := f.Ruleset.Tables[0].Chains[0].Rules[0].Exprs[0].Xt.Conntrack
 	if got.States[0] != "new" {
 		t.Errorf("states = %v, want the collector's own answer untouched", got.States)
+	}
+}
+
+// A negated range is what actually produces an expr.Range: the positive
+// form compiles to two ordered comparisons instead
+// (docs/decisions/0011-ranges-and-interval-sets.md). The bounds are the
+// inclusive endpoints, big-endian in the register's width.
+func TestConvertRange(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Range{Op: expr.CmpOpNeq, Register: 1,
+			FromData: []byte{0x0b, 0xb8}, ToData: []byte{0x0f, 0xa0}},
+	})
+	if got[0].Kind != facts.ExprRange || got[0].Range == nil {
+		t.Fatalf("expr = %+v, want a decoded range", got[0])
+	}
+	r := got[0].Range
+	if r.Op != "neq" || r.Register != 1 || r.From != "0bb8" || r.To != "0fa0" {
+		t.Errorf("range = %+v, want neq on register 1 from 3000 to 4000", r)
+	}
+}
+
+func TestConvertRangeEq(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Range{Op: expr.CmpOpEq, Register: 1, FromData: []byte{0x00, 0x16}, ToData: []byte{0x00, 0x50}},
+	})
+	if got[0].Range == nil || got[0].Range.Op != "eq" {
+		t.Fatalf("range = %+v, want eq", got[0].Range)
+	}
+}
+
+// The fourth check_set pattern. Decision 0003 left --remove undecoded
+// because its bit had never been captured, and the pattern the other three
+// follow is an inference rather than evidence. It was captured in CI run
+// 33318460615, and it is 0x08, which is what that pattern would have
+// predicted: the refusal cost nothing and the evidence settles it.
+func TestRecentRemoveDecodes(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Match{Name: "recent", Rev: 1, Info: mustDecodeXtUnknown(t, recentRemoveHex)},
+	})
+	x := got[0].Xt
+	if !x.Decoded || x.Recent == nil {
+		t.Fatalf("recent --remove did not decode: %+v", x)
+	}
+	if x.Recent.Mode != "remove" {
+		t.Errorf("mode = %q, want remove", x.Recent.Mode)
+	}
+	if x.Recent.Name != "SSH" {
+		t.Errorf("name = %q, want SSH", x.Recent.Name)
 	}
 }

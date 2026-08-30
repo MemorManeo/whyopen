@@ -143,13 +143,13 @@ type Table struct {
 }
 
 // Set is an nftables named or anonymous set, as read by GetSets and
-// GetSetElements. whyopen models only a flat membership test against a set
-// of equal-length keys: Interval, IsMap and Concatenation are carried here
-// precisely so internal/model/match.go can refuse everything else, an
-// interval (range) set, a map or verdict map carrying a value alongside
-// each key, or a concatenated key type, rather than guess at what such a
-// set would mean to a membership test. See LookupExpr's doc comment for how
-// a Lookup expression names one of these.
+// GetSetElements. whyopen resolves two shapes: a flat set of equal-length
+// keys, and an interval set, whose elements pair a start with an exclusive
+// end (decision 0011). IsMap and Concatenation are carried so
+// internal/model/match.go can refuse what is left, a map or verdict map
+// carrying a value alongside each key, or a concatenated key type, rather
+// than guess at what such a set would mean to a membership test. See
+// LookupExpr's doc comment for how a Lookup expression names one of these.
 type Set struct {
 	Name      string `json:"name"`
 	Anonymous bool   `json:"anonymous"`
@@ -176,6 +176,14 @@ type SetElement struct {
 	Key    string `json:"key"`
 	Val    string `json:"val,omitempty"`
 	KeyEnd string `json:"key_end,omitempty"`
+	// IntervalEnd marks this element as the exclusive upper bound of an
+	// interval rather than a member in its own right. An interval set
+	// stores `100-200` as a start element at 100 and an end element at
+	// 201, and a single value as an interval one wide, which is the
+	// representation decision 0011 captured from a live kernel. Without
+	// this flag a start and an end are indistinguishable, and reading the
+	// list as plain members would report 201 as open and 150 as closed.
+	IntervalEnd bool `json:"interval_end,omitempty"`
 }
 
 type Chain struct {
@@ -221,6 +229,10 @@ const (
 	ExprBitwise ExprKind = "bitwise"
 	ExprCt      ExprKind = "ct"
 	ExprLookup  ExprKind = "lookup"
+	// ExprRange is a range test on a register. Only the negated form of a
+	// range compiles to one: a positive `tcp dport 1024-2048` becomes two
+	// ordered comparisons instead, which is what decision 0011 captured.
+	ExprRange   ExprKind = "range"
 	ExprVerdict ExprKind = "verdict"
 	ExprXt      ExprKind = "xt"
 	// ExprOther is recorded for completeness and is treated by the evaluator
@@ -246,9 +258,20 @@ type Expr struct {
 	Bitwise *BitwiseExpr `json:"bitwise,omitempty"`
 	Ct      *CtExpr      `json:"ct,omitempty"`
 	Lookup  *LookupExpr  `json:"lookup,omitempty"`
+	Range   *RangeExpr   `json:"range,omitempty"`
 	Verdict *VerdictExpr `json:"verdict,omitempty"`
 	Xt      *XtExpr      `json:"xt,omitempty"`
 	Note    string       `json:"note,omitempty"`
+}
+
+// RangeExpr tests whether a register falls within two inclusive bounds.
+// From and To are lowercase hex in the register's own width, big-endian,
+// the same convention CmpExpr.Data uses.
+type RangeExpr struct {
+	Op       string `json:"op"` // eq | neq
+	Register uint32 `json:"register"`
+	From     string `json:"from"`
+	To       string `json:"to"`
 }
 
 type PayloadExpr struct {

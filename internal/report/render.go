@@ -28,6 +28,10 @@ func RenderRule(r facts.Rule) string {
 			pendingMask = e.Bitwise.Mask
 		case facts.ExprCt:
 			pending = renderCtKey(e.Ct.Key)
+		case facts.ExprRange:
+			parts = append(parts, renderRange(pending, e.Range))
+			pending, pendingMask = "", ""
+
 		case facts.ExprLookup:
 			parts = append(parts, renderLookup(pending, e.Lookup))
 			pending, pendingMask = "", ""
@@ -107,6 +111,20 @@ func renderCtKey(key string) string {
 		return "ct state"
 	}
 	return "ct " + key
+}
+
+// renderRange spells a range the way nft does, "dport 3000-4000" or
+// "dport != 3000-4000", with the bounds read in the field's own units
+// rather than left as the hex the register holds.
+func renderRange(field string, r *facts.RangeExpr) string {
+	if field == "" {
+		field = "<unnamed field>"
+	}
+	bounds := cmpValue(field, r.From) + "-" + cmpValue(field, r.To)
+	if r.Op == "neq" {
+		return field + " != " + bounds
+	}
+	return field + " " + bounds
 }
 
 // renderLookup names the set a Lookup expression tests membership against.

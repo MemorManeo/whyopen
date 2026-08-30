@@ -613,3 +613,103 @@ func TestConntrackPayloadIsPreserved(t *testing.T) {
 		t.Errorf("re-deriving from the preserved payload changed %d expression(s), so the bytes and the decode disagree", n)
 	}
 }
+
+// Ranges, in the three shapes decision 0011 captured. A positive range is
+// two ordered comparisons, a named interval set and an anonymous set
+// containing a range are lookups against interval sets, and all three used
+// to report unknown.
+func TestRangesResolve(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	for _, port := range []string{"1500", "3000", "5050", "6050", "7000"} {
+		listenIn(t, ns, "0.0.0.0", port)
+	}
+	applyNftRuleset(t, ns, `
+table inet filter {
+	set ports_interval {
+		type inet_service
+		flags interval
+		elements = { 5000-5100 }
+	}
+
+	chain input {
+		type filter hook input priority 0; policy drop;
+		tcp dport 1024-2048 accept
+		tcp dport @ports_interval accept
+		tcp dport { 6000-6100, 7000 } accept
+	}
+}
+`)
+
+	vs := evaluate(collectIn(t, ns))
+	for port, want := range map[uint16]string{
+		1500: "reachable", // inside the plain range
+		3000: "filtered",  // inside none of them
+		5050: "reachable", // inside the named interval set
+		6050: "reachable", // inside the anonymous set's range
+		7000: "reachable", // a single value in an interval set is an interval one wide
+	} {
+		v := verdictFor(vs, port, "ip")
+		if v == nil {
+			t.Errorf("no verdict for %d", port)
+			continue
+		}
+		if v.Result != want {
+			t.Errorf("%d = %s (%s), want %s", port, v.Result, v.Reason, want)
+		}
+	}
+}
+
+// The negated form, which is the one that actually produces an
+// expr.Range. The chain accepts by default and drops everything outside
+// the range, so a port inside it survives and one outside does not.
+func TestNegatedRangeResolves(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	listenIn(t, ns, "0.0.0.0", "8500")
+	listenIn(t, ns, "0.0.0.0", "9500")
+	applyNftRuleset(t, ns, `
+table inet filter {
+	chain input {
+		type filter hook input priority 0; policy accept;
+		tcp dport != 8000-9000 drop
+	}
+}
+`)
+
+	vs := evaluate(collectIn(t, ns))
+	if v := verdictFor(vs, 8500, "ip"); v == nil || v.Result != "reachable" {
+		t.Fatalf("8500 = %+v, want reachable: it is inside the range the drop excludes", v)
+	}
+	if v := verdictFor(vs, 9500, "ip"); v == nil || v.Result != "filtered" {
+		t.Fatalf("9500 = %+v, want filtered: it is outside the range, so the drop applies", v)
+	}
+}
+
+// The fourth xt recent mode. Before its bit was captured, a --remove rule
+// left the verdict unknown; now the rule resolves and the port falls
+// through to the chain's drop policy, which is a decided answer rather
+// than a refusal.
+func TestRecentRemoveResolves(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "iptables", "python3")
+
+	ns := newNetns(t)
+	listenIn(t, ns, "0.0.0.0", "8080")
+	nsRun(t, ns, "iptables", "-P", "INPUT", "DROP")
+	nsRun(t, ns, "iptables", "-A", "INPUT", "-p", "tcp", "--dport", "8080",
+		"-m", "recent", "--remove", "--name", "SSH", "-j", "ACCEPT")
+
+	v := verdictFor(evaluate(collectIn(t, ns)), 8080, "ip")
+	if v == nil {
+		t.Fatal("no verdict for 8080")
+	}
+	if v.Result != "filtered" {
+		t.Fatalf("8080 = %s (%s), want filtered: on a first connection the recent list is "+
+			"empty, so --remove cannot match and the packet reaches the drop policy", v.Result, v.Reason)
+	}
+}

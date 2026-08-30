@@ -215,3 +215,21 @@ func TestExplainMarksASkippedRule(t *testing.T) {
 		}
 	}
 }
+
+// A range printed as two hex blobs is unreadable in the one place a
+// reader has gone looking for the rule that decided a verdict.
+func TestRenderRuleShowsARange(t *testing.T) {
+	rule := func(op string) facts.Rule {
+		return facts.Rule{Handle: 41, Exprs: []facts.Expr{
+			{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+			{Kind: facts.ExprRange, Range: &facts.RangeExpr{Op: op, Register: 1, From: "0bb8", To: "0fa0"}},
+			{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+		}}
+	}
+	if got := RenderRule(rule("neq")); !strings.Contains(got, "dport != 3000-4000") {
+		t.Errorf("RenderRule = %q, want the negated range in nft's own spelling", got)
+	}
+	if got := RenderRule(rule("eq")); !strings.Contains(got, "dport 3000-4000") {
+		t.Errorf("RenderRule = %q, want the range", got)
+	}
+}

@@ -208,6 +208,9 @@ func convertSet(s *nftables.Set, elems []nftables.SetElement) facts.Set {
 		if len(e.KeyEnd) > 0 {
 			fe.KeyEnd = hex.EncodeToString(e.KeyEnd)
 		}
+		// Which side of an interval this element is. Without it a start and
+		// an exclusive end are indistinguishable (decision 0011).
+		fe.IntervalEnd = e.IntervalEnd
 		fs.Elements = append(fs.Elements, fe)
 	}
 	return fs

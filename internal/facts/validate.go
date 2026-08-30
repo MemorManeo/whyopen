@@ -48,6 +48,8 @@ func (e Expr) validate() error {
 		missing = e.Ct == nil
 	case ExprLookup:
 		missing = e.Lookup == nil
+	case ExprRange:
+		missing = e.Range == nil
 	case ExprVerdict:
 		missing = e.Verdict == nil
 	case ExprXt:
