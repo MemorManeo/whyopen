@@ -333,6 +333,12 @@ func loadFacts(path string) (facts.Facts, int) {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", path, err)
 		return f, exitError
 	}
+	// A snapshot from an older build may carry payloads this build can
+	// decode and that one could not. Say so rather than quietly answering
+	// differently from what the document itself records.
+	if n := collect.Redecode(&f); n > 0 {
+		fmt.Fprintf(os.Stderr, "re-decoded %d expression(s) this build understands and the collecting build did not\n", n)
+	}
 	return f, exitOK
 }
 

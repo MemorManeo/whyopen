@@ -280,6 +280,14 @@ type XtExpr struct {
 	Conntrack *ConntrackInfo `json:"conntrack,omitempty"`
 	AddrType  *AddrTypeInfo  `json:"addrtype,omitempty"`
 	Recent    *RecentInfo    `json:"recent,omitempty"`
+	// Raw is the extension's payload exactly as the kernel sent it,
+	// lowercase hex, for every extension whose payload reaches whyopen as
+	// bytes. Without it a document records only that this build could not
+	// decode something, and a later build with a better decoder can make
+	// nothing of an older snapshot: see collect.Redecode. It is empty for
+	// an extension the nftables library typed before whyopen saw it, since
+	// re-marshalling one would record a payload whyopen never received.
+	Raw string `json:"raw,omitempty"`
 }
 
 type DNATInfo struct {

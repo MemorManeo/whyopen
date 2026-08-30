@@ -257,15 +257,72 @@ func convertXt(kind, name string, rev uint32, info xt.InfoAny) *facts.XtExpr {
 			InvertSource: i.InvertSource,
 		}
 	case *xt.Unknown:
-		// The nftables library has no dedicated type for "recent", so its
-		// payload arrives here as raw bytes like any other extension it
-		// cannot name. Everything else that lands in this case stays
-		// undecoded, exactly as it did before this case existed.
-		if name == "recent" {
-			x.Recent, x.Decoded = recentInfo(rev, []byte(*i))
-		}
+		// Everything the nftables library cannot name arrives here as the
+		// payload the kernel sent. Keep it: it is the only form in which a
+		// later build with a better decoder can make anything of this
+		// snapshot, and discarding it is what made a facts document lossy
+		// across decoder generations.
+		x.Raw = hex.EncodeToString([]byte(*i))
+		decodeXtRaw(x)
 	}
 	return x
+}
+
+// decodeXtRaw runs whyopen's own byte-level decoders over a preserved
+// payload and reports whether one of them resolved it. These are the
+// extensions the nftables library has no type for, so their layout was
+// captured from a live kernel and recorded in docs/decisions rather than
+// taken from the library.
+//
+// It is the single place both the collector and Redecode decode from
+// bytes, so a document read back later resolves exactly as one collected
+// now would.
+func decodeXtRaw(x *facts.XtExpr) bool {
+	if x.Decoded || x.Raw == "" {
+		return false
+	}
+	raw, err := hex.DecodeString(x.Raw)
+	if err != nil {
+		return false
+	}
+	switch x.Name {
+	case "recent":
+		if info, ok := recentInfo(x.Rev, raw); ok {
+			x.Recent, x.Decoded = info, true
+			return true
+		}
+	}
+	return false
+}
+
+// Redecode re-runs whyopen's byte-level decoders over a facts document and
+// returns how many expressions it resolved that the collecting build could
+// not. It is what makes collect-once-evaluate-later hold across decoder
+// generations: a snapshot taken before whyopen understood an extension is
+// evaluated at the reading build's fidelity, as long as that snapshot
+// preserved the payload.
+//
+// It only ever fills in what is missing. An expression the collector
+// already decoded keeps its own answer, because that build saw the live
+// kernel and this one is reading a file.
+func Redecode(f *facts.Facts) int {
+	n := 0
+	for ti := range f.Ruleset.Tables {
+		for ci := range f.Ruleset.Tables[ti].Chains {
+			for ri := range f.Ruleset.Tables[ti].Chains[ci].Rules {
+				exprs := f.Ruleset.Tables[ti].Chains[ci].Rules[ri].Exprs
+				for ei := range exprs {
+					if exprs[ei].Kind != facts.ExprXt || exprs[ei].Xt == nil {
+						continue
+					}
+					if decodeXtRaw(exprs[ei].Xt) {
+						n++
+					}
+				}
+			}
+		}
+	}
+	return n
 }
 
 // recentInfo decodes an xt recent match payload at the layout captured in

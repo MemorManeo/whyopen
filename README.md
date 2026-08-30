@@ -25,11 +25,14 @@ verdicts above are asserted by the test suite.
 
 The two `unknown` rows on port 22 date the snapshot rather than describe
 whyopen today. It was captured before whyopen decoded the `xt recent`
-extension that `ufw limit ssh` uses, and a facts document preserves what the
-collector understood when it ran, so those two rules still carry no decoded
-payload and whyopen still declines to guess about them. A current run
-against a live UFW host decodes them and resolves port 22, which the
-integration suite asserts against a real kernel. The verdicts above are as
+extension that `ufw limit ssh` uses, and that build discarded the payload
+it could not read, so those two rules carry nothing to decode and whyopen
+still declines to guess about them. A current run against a live UFW host
+decodes them and resolves port 22, which the integration suite asserts
+against a real kernel. Snapshots taken from v0.4.0 on keep the payload of
+every extension whyopen cannot type, so a later build with a better
+decoder resolves them when it reads the document, and says on stderr how
+many it re-decoded. The verdicts above are as
 collected, not edited to show what a fresh run would produce; only the owner
 names are generalised, as noted above, and the table shows nine of the
 thirty-nine rows.

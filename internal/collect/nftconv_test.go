@@ -547,3 +547,100 @@ func TestStateShapedRulesResolveThroughEvaluate(t *testing.T) {
 		}
 	}
 }
+
+// Recording only "decoded: false" throws away the one thing a later build
+// with a better decoder would need. Every extension whose payload arrives
+// as bytes keeps them.
+func TestConvertXtPreservesTheRawPayload(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Match{Name: "LOG", Rev: 0, Info: mustDecodeXtUnknown(t, "deadbeef")},
+	})
+	if got[0].Xt.Decoded {
+		t.Fatalf("LOG decoded = true, want false")
+	}
+	if got[0].Xt.Raw != "deadbeef" {
+		t.Errorf("raw = %q, want %q", got[0].Xt.Raw, "deadbeef")
+	}
+}
+
+// A decoded extension keeps its bytes too, so a later build can re-check a
+// decode it has reason to doubt.
+func TestConvertXtPreservesTheRawPayloadOfWhatItDecodes(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Match{Name: "recent", Rev: 1, Info: mustDecodeXtUnknown(t, recentUpdateHex)},
+	})
+	if !got[0].Xt.Decoded {
+		t.Fatalf("recent decoded = false, want true")
+	}
+	if got[0].Xt.Raw != recentUpdateHex {
+		t.Errorf("raw = %q, want the captured payload", got[0].Xt.Raw)
+	}
+}
+
+// An extension the nftables library typed for us was never seen as bytes
+// here. Re-marshalling one to fill this field would record a payload
+// whyopen never received, which is exactly the kind of invention the rest
+// of this collector refuses.
+func TestConvertXtRecordsNoRawForAnExtensionItNeverSawAsBytes(t *testing.T) {
+	got := ConvertExprs([]expr.Any{&expr.Target{Name: "DNAT", Rev: 0, Info: &xt.NatRange{}}})
+	if got[0].Xt.Raw != "" {
+		t.Errorf("raw = %q, want empty: the library consumed the bytes", got[0].Xt.Raw)
+	}
+}
+
+func withXt(x *facts.XtExpr) *facts.Facts {
+	return &facts.Facts{Ruleset: facts.Ruleset{Tables: []facts.Table{{
+		Family: "ip", Name: "filter", Chains: []facts.Chain{{
+			Name: "INPUT", Rules: []facts.Rule{{Handle: 1, Exprs: []facts.Expr{{Kind: facts.ExprXt, Xt: x}}}},
+		}},
+	}}}}
+}
+
+// The point of preserving the bytes: a document collected before whyopen
+// could decode an extension is evaluated by a later build at that build's
+// fidelity rather than being stuck at the collector's.
+func TestRedecodeResolvesAPayloadTheCollectorCouldNot(t *testing.T) {
+	f := withXt(&facts.XtExpr{Kind: "match", Name: "recent", Rev: 1, Decoded: false, Raw: recentUpdateHex})
+	if n := Redecode(f); n != 1 {
+		t.Fatalf("Redecode improved %d expressions, want 1", n)
+	}
+	x := f.Ruleset.Tables[0].Chains[0].Rules[0].Exprs[0].Xt
+	if !x.Decoded || x.Recent == nil {
+		t.Fatalf("expression still undecoded: %+v", x)
+	}
+	if x.Recent.Seconds != 30 || x.Recent.HitCount != 6 {
+		t.Errorf("recent = %+v, want the captured --seconds 30 --hitcount 6", x.Recent)
+	}
+}
+
+// A document from a build that discarded the bytes cannot be improved,
+// and must be left exactly as it was rather than guessed at.
+func TestRedecodeLeavesAnExtensionWithNoRawAlone(t *testing.T) {
+	f := withXt(&facts.XtExpr{Kind: "match", Name: "recent", Rev: 1, Decoded: false})
+	if n := Redecode(f); n != 0 {
+		t.Fatalf("Redecode improved %d expressions, want 0", n)
+	}
+	if f.Ruleset.Tables[0].Chains[0].Rules[0].Exprs[0].Xt.Decoded {
+		t.Error("an expression with no raw payload was marked decoded")
+	}
+}
+
+func TestRedecodeDoesNotTouchWhatIsAlreadyDecoded(t *testing.T) {
+	f := withXt(&facts.XtExpr{Kind: "match", Name: "recent", Rev: 1, Decoded: true, Raw: recentUpdateHex,
+		Recent: &facts.RecentInfo{Mode: "check_set", Seconds: 99}})
+	if n := Redecode(f); n != 0 {
+		t.Fatalf("Redecode improved %d expressions, want 0", n)
+	}
+	if got := f.Ruleset.Tables[0].Chains[0].Rules[0].Exprs[0].Xt.Recent.Seconds; got != 99 {
+		t.Errorf("seconds = %d, want the collector's own 99 left in place", got)
+	}
+}
+
+// An extension this build still has no byte decoder for stays undecoded:
+// the raw payload is preserved for a future build, not guessed at now.
+func TestRedecodeLeavesAnUndecodableExtensionUndecoded(t *testing.T) {
+	f := withXt(&facts.XtExpr{Kind: "match", Name: "LOG", Rev: 0, Decoded: false, Raw: "deadbeef"})
+	if n := Redecode(f); n != 0 {
+		t.Fatalf("Redecode improved %d expressions, want 0", n)
+	}
+}
