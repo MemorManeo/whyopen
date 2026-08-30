@@ -318,3 +318,27 @@ evidence or a user rather than a decision.
   typed native expression, so the same fix does not apply, and what
   whyopen does not decode is recorded as `ExprUnknown` with the type name.
   Worth revisiting only if a real ruleset turns up where it matters.
+
+## Found in v1.6, not yet fixed: a forwarded port is invisible
+
+whyopen finds ports to report from two places: listening sockets on this
+host, and Docker publishes. A router or VM host that forwards a port to a
+machine on its LAN has neither. `TestHandWrittenPortForwardIsVisible`
+applies exactly that rule and whyopen reports **nothing at all** for the
+port: not `unknown`, not a row, silence.
+
+That is worse than a wrong verdict. A user reading the table sees no entry
+and concludes nothing is exposed, while the host forwards the port to a
+machine the table never mentions.
+
+Closing it means a third source of endpoints: a static scan of the ruleset
+for destination rewrites, turning each one into an endpoint the way a
+Docker publish already becomes one. Both halves now exist to build it on,
+since v1.6 decodes the native rewrite and v0.1 decoded the xt one. The
+design questions are what such an endpoint is called (there is no process
+and no container to name as its owner), what `reachable` means for a port
+whose service lives on a machine whyopen cannot see, and whether a rewrite
+with no port constraint means every port is forwarded.
+
+None of that is hard. It is a decision about what the table promises, and
+it should be made deliberately rather than while fixing something else.
