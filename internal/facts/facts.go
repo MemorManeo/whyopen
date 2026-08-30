@@ -64,6 +64,26 @@ type Host struct {
 	Hostname   string      `json:"hostname"`
 	Interfaces []Interface `json:"interfaces"`
 	Sysctls    Sysctls     `json:"sysctls"`
+	// Routes are the host's routing table, needed for exactly one thing:
+	// a native `fib ... oif` expression asks whether a route back to the
+	// packet's source exists, and firewalld installs one in prerouting on
+	// every host it manages. See
+	// docs/decisions/0012-fib-and-routes.md, including why whyopen only
+	// ever concludes that such a route is present and never that it is
+	// missing.
+	Routes []Route `json:"routes,omitempty"`
+}
+
+// Route is one entry of the host's routing table, reduced to what the fib
+// question needs: which prefix, and out of which device. Policy routing
+// rules, VRFs and multipath next-hops are not read, which is why the
+// evaluator refuses rather than concludes when a lookup does not clearly
+// resolve.
+type Route struct {
+	Dest      string `json:"dest"`
+	PrefixLen int    `json:"prefix_len"`
+	Family    string `json:"family"` // ip | ip6
+	Device    string `json:"device"`
 }
 
 type Interface struct {
@@ -232,7 +252,12 @@ const (
 	// ExprRange is a range test on a register. Only the negated form of a
 	// range compiles to one: a positive `tcp dport 1024-2048` becomes two
 	// ordered comparisons instead, which is what decision 0011 captured.
-	ExprRange   ExprKind = "range"
+	ExprRange ExprKind = "range"
+	// ExprFib is a routing-table lookup used as a match. whyopen models
+	// two of its shapes: the address type of the packet's source or
+	// destination, and whether a route back to the source exists. See
+	// docs/decisions/0012-fib-and-routes.md.
+	ExprFib     ExprKind = "fib"
 	ExprVerdict ExprKind = "verdict"
 	ExprXt      ExprKind = "xt"
 	// ExprOther is recorded for completeness and is treated by the evaluator
@@ -259,9 +284,23 @@ type Expr struct {
 	Ct      *CtExpr      `json:"ct,omitempty"`
 	Lookup  *LookupExpr  `json:"lookup,omitempty"`
 	Range   *RangeExpr   `json:"range,omitempty"`
+	Fib     *FibExpr     `json:"fib,omitempty"`
 	Verdict *VerdictExpr `json:"verdict,omitempty"`
 	Xt      *XtExpr      `json:"xt,omitempty"`
 	Note    string       `json:"note,omitempty"`
+}
+
+// FibExpr is a fib lookup reduced to the two questions whyopen can answer.
+// Query is "addrtype" (the RTN_* value of an address) or "oif-present" (1
+// when the lookup finds a route, 0 when it does not, which is what nft
+// spells "oif missing" when compared against 0). Source says which address
+// is looked up. MatchesIface records that the lookup keys on the input
+// interface, which makes it a strict reverse-path check.
+type FibExpr struct {
+	Query        string `json:"query"` // addrtype | oif-present
+	Register     uint32 `json:"register"`
+	Source       string `json:"source"` // saddr | daddr
+	MatchesIface bool   `json:"matches_iface,omitempty"`
 }
 
 // RangeExpr tests whether a register falls within two inclusive bounds.

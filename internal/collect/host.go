@@ -66,6 +66,11 @@ func Host(procRoot string) (facts.Host, []facts.Warning) {
 		}
 	}
 
+	// Routes, for the one question that needs them: whether a route back
+	// to a packet's source exists (docs/decisions/0012-fib-and-routes.md).
+	// Their absence costs only the ability to resolve a fib lookup.
+	h.Routes, _ = Routes(procRoot)
+
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		warns = append(warns, facts.Warning{Source: "host", Message: fmt.Sprintf("interfaces: %v", err)})

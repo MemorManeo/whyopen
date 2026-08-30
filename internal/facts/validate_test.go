@@ -11,7 +11,7 @@ import (
 // that names the kind without carrying the object is what turns
 // `check -facts` into a panic instead of a verdict.
 func TestValidateRefusesAKindWithoutItsObject(t *testing.T) {
-	for _, kind := range []ExprKind{ExprPayload, ExprCmp, ExprMeta, ExprBitwise, ExprCt, ExprLookup, ExprRange, ExprVerdict, ExprXt} {
+	for _, kind := range []ExprKind{ExprPayload, ExprCmp, ExprMeta, ExprBitwise, ExprCt, ExprLookup, ExprRange, ExprFib, ExprVerdict, ExprXt} {
 		t.Run(string(kind), func(t *testing.T) {
 			f := Facts{SchemaVersion: SchemaVersion, Ruleset: Ruleset{Tables: []Table{{
 				Family: "ip", Name: "filter", Chains: []Chain{{

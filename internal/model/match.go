@@ -128,6 +128,13 @@ func MatchRule(pkt *Packet, r facts.Rule, sets []facts.Set) (Outcome, Action) {
 				return OutcomeUnknown, act
 			}
 
+		case facts.ExprFib:
+			b, ok := fibBytes(pkt, e.Fib)
+			if !ok {
+				return OutcomeUnknown, act
+			}
+			regs[e.Fib.Register] = b
+
 		case facts.ExprRange:
 			from, err1 := hex.DecodeString(e.Range.From)
 			to, err2 := hex.DecodeString(e.Range.To)
@@ -358,6 +365,53 @@ func ctBytes(pkt *Packet, key string) ([]byte, bool) {
 			status |= ctStatusDstNatBit
 		}
 		binary.NativeEndian.PutUint32(b, status)
+	default:
+		return nil, false
+	}
+	return b, true
+}
+
+// RTN_UNICAST and RTN_LOCAL, the address types a fib lookup returns for
+// the two roles whyopen's synthetic packet can have.
+const (
+	rtnUnicastValue = 1
+	rtnLocalValue   = 2
+)
+
+// fibBytes builds the register contents a fib lookup writes, for the two
+// shapes whyopen can answer (docs/decisions/0012-fib-and-routes.md).
+//
+// The address type is answered from the same certainty the xt addrtype
+// match already uses: the destination is local when it is one of this
+// host's own addresses and unicast otherwise, and the source is always a
+// unicast address in the internet zone.
+//
+// The presence lookup is answered only in one direction. whyopen returns
+// 1, "a route is there", when it finds one that leaves the interface the
+// packet arrived on, and otherwise refuses. It never returns 0. Returning
+// 0 would make firewalld's reverse-path rule drop the packet and report
+// the port filtered, on a routing table whyopen knows it may have read
+// incompletely: it does not read policy routing rules, VRFs or multipath
+// next-hops. Reporting a port closed on incomplete evidence is the one
+// failure this tool must not have; over-reporting exposure is the safe
+// direction, and refusing is safer still.
+func fibBytes(pkt *Packet, f *facts.FibExpr) ([]byte, bool) {
+	b := make([]byte, 4)
+	switch f.Query {
+	case "addrtype":
+		v := uint32(rtnUnicastValue)
+		if f.Source == "daddr" && pkt.DstIsLocal {
+			v = rtnLocalValue
+		}
+		binary.NativeEndian.PutUint32(b, v)
+	case "oif-present":
+		if pkt.SrcRouteDev == "" {
+			return nil, false
+		}
+		if f.MatchesIface && pkt.InIface != "" && pkt.SrcRouteDev != pkt.InIface {
+			return nil, false
+		}
+		binary.NativeEndian.PutUint32(b, 1)
 	default:
 		return nil, false
 	}

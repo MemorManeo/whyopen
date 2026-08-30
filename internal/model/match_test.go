@@ -1155,3 +1155,94 @@ func TestUnmodelledCtKeyStillRefuses(t *testing.T) {
 		t.Fatalf("out=%v, want unknown for a ct key whyopen does not model", out)
 	}
 }
+
+// RTN_UNICAST and RTN_LOCAL, the values a fib address-type lookup returns.
+const (
+	rtnUnicast = 1
+	rtnLocal   = 2
+)
+
+func fibRule(f *facts.FibExpr, op string, data uint32) facts.Rule {
+	return facts.Rule{Handle: 71, Exprs: []facts.Expr{
+		{Kind: facts.ExprFib, Fib: f},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: op, Register: 1, Data: natHex(data)}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+}
+
+// `fib daddr type local` is the native spelling of the addrtype match
+// whyopen has decoded through the xt path since v0.1, and the model
+// answers it from the same certainty: the destination is local when it is
+// one of this host's own addresses.
+func TestFibAddrTypeAnswersFromTheDestination(t *testing.T) {
+	rule := fibRule(&facts.FibExpr{Query: "addrtype", Register: 1, Source: "daddr"}, "eq", rtnLocal)
+
+	local := testPacket()
+	local.DstIsLocal = true
+	if out, _ := MatchRule(local, rule, nil); out != OutcomeMatch {
+		t.Errorf("out = %v, want match: the destination is one of this host's addresses", out)
+	}
+
+	forwarded := testPacket()
+	forwarded.DstIsLocal = false
+	if out, _ := MatchRule(forwarded, rule, nil); out != OutcomeNoMatch {
+		t.Errorf("out = %v, want no match: a rewritten destination is not local", out)
+	}
+}
+
+func TestFibAddrTypeSourceIsAlwaysUnicast(t *testing.T) {
+	rule := fibRule(&facts.FibExpr{Query: "addrtype", Register: 1, Source: "saddr"}, "eq", rtnUnicast)
+	if out, _ := MatchRule(testPacket(), rule, nil); out != OutcomeMatch {
+		t.Fatalf("out = %v, want match: the internet zone's source is a unicast address", out)
+	}
+}
+
+// firewalld's reverse-path rule, `fib saddr . mark . iif oif missing
+// drop`, which is compiled as a fib into a register compared against 0.
+// With a route back out the arrival interface the lookup is present, so
+// the comparison against 0 fails and the drop does not fire.
+func TestFibPresenceResolvesWhenTheRouteLeavesTheArrivalInterface(t *testing.T) {
+	rule := fibRule(&facts.FibExpr{Query: "oif-present", Register: 1, Source: "saddr", MatchesIface: true}, "eq", 0)
+	p := testPacket()
+	p.InIface = "eth0"
+	p.SrcRouteDev = "eth0"
+	if out, _ := MatchRule(p, rule, nil); out != OutcomeNoMatch {
+		t.Fatalf("out = %v, want no match: a route back exists, so nothing is missing", out)
+	}
+}
+
+// The asymmetry decision 0012 rests on: whyopen concludes that a route is
+// present and never that one is missing. Concluding "missing" would make
+// this rule drop the packet and report the port filtered, on a routing
+// table whyopen knows it may have read incompletely, and reporting a port
+// closed on incomplete evidence is the one failure this tool must not
+// have.
+func TestFibPresenceRefusesRatherThanConcludingMissing(t *testing.T) {
+	rule := fibRule(&facts.FibExpr{Query: "oif-present", Register: 1, Source: "saddr", MatchesIface: true}, "eq", 0)
+
+	noRoute := testPacket()
+	noRoute.InIface = "eth0"
+	noRoute.SrcRouteDev = "" // whyopen found no route to the source
+	if out, _ := MatchRule(noRoute, rule, nil); out != OutcomeUnknown {
+		t.Errorf("out = %v, want unknown: whyopen does not read policy routing, so it cannot say a route is absent", out)
+	}
+
+	otherIface := testPacket()
+	otherIface.InIface = "eth0"
+	otherIface.SrcRouteDev = "eth1" // asymmetric routing, or a table whyopen did not read
+	if out, _ := MatchRule(otherIface, rule, nil); out != OutcomeUnknown {
+		t.Errorf("out = %v, want unknown: the route back leaves another interface", out)
+	}
+}
+
+// Without the input-interface key the question is only whether any route
+// to the source exists, which whyopen can answer from any matching route.
+func TestFibPresenceWithoutTheInterfaceKey(t *testing.T) {
+	rule := fibRule(&facts.FibExpr{Query: "oif-present", Register: 1, Source: "saddr"}, "eq", 0)
+	p := testPacket()
+	p.InIface = "eth0"
+	p.SrcRouteDev = "eth1"
+	if out, _ := MatchRule(p, rule, nil); out != OutcomeNoMatch {
+		t.Fatalf("out = %v, want no match: some route exists, which is all this shape asks", out)
+	}
+}

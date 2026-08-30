@@ -1,6 +1,7 @@
 package model
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -716,5 +717,50 @@ func TestIngressChainWithNoDevicesIsTreatedAsEveryDevice(t *testing.T) {
 	}
 	if !strings.Contains(vs[0].Reason, "could not read") {
 		t.Errorf("reason = %q, want it to say the devices could not be read", vs[0].Reason)
+	}
+}
+
+// The route back to a packet's source is a longest-prefix question, and
+// the answer is a device name or nothing at all.
+func TestRouteDevFor(t *testing.T) {
+	routes := []facts.Route{
+		{Dest: "0.0.0.0", PrefixLen: 0, Family: "ip", Device: "eth0"},
+		{Dest: "10.0.0.0", PrefixLen: 8, Family: "ip", Device: "eth1"},
+		{Dest: "10.1.0.0", PrefixLen: 16, Family: "ip", Device: "eth2"},
+		{Dest: "::", PrefixLen: 0, Family: "ip6", Device: "eth0"},
+	}
+	cases := map[string]string{
+		"198.51.100.7":     "eth0", // only the default route covers it
+		"10.9.0.1":         "eth1", // the /8
+		"10.1.2.3":         "eth2", // the /16 wins over the /8
+		"2001:db8:ffff::7": "eth0",
+	}
+	for addr, want := range cases {
+		if got := routeDevFor(routes, netip.MustParseAddr(addr)); got != want {
+			t.Errorf("routeDevFor(%s) = %q, want %q", addr, got, want)
+		}
+	}
+}
+
+// No route, and an ambiguous one, are both "whyopen cannot say". They must
+// not be reported as a device, because the evaluator reads a device as
+// permission to conclude the route is there.
+func TestRouteDevForRefusesWhatItCannotResolve(t *testing.T) {
+	if got := routeDevFor(nil, netip.MustParseAddr("198.51.100.7")); got != "" {
+		t.Errorf("routeDevFor with no routes = %q, want empty", got)
+	}
+	// A family with no default route does not borrow the other family's.
+	onlyV6 := []facts.Route{{Dest: "::", PrefixLen: 0, Family: "ip6", Device: "eth0"}}
+	if got := routeDevFor(onlyV6, netip.MustParseAddr("198.51.100.7")); got != "" {
+		t.Errorf("routeDevFor across families = %q, want empty", got)
+	}
+	// Two equally specific routes out of different devices: multipath, or
+	// a table whyopen read only half of.
+	tied := []facts.Route{
+		{Dest: "0.0.0.0", PrefixLen: 0, Family: "ip", Device: "eth0"},
+		{Dest: "0.0.0.0", PrefixLen: 0, Family: "ip", Device: "eth1"},
+	}
+	if got := routeDevFor(tied, netip.MustParseAddr("198.51.100.7")); got != "" {
+		t.Errorf("routeDevFor with a tie = %q, want empty: whyopen cannot say which", got)
 	}
 }

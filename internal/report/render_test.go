@@ -1,6 +1,8 @@
 package report
 
 import (
+	"encoding/binary"
+	"encoding/hex"
 	"strings"
 	"testing"
 
@@ -232,4 +234,34 @@ func TestRenderRuleShowsARange(t *testing.T) {
 	if got := RenderRule(rule("eq")); !strings.Contains(got, "dport 3000-4000") {
 		t.Errorf("RenderRule = %q, want the range", got)
 	}
+}
+
+// nft spells these "fib daddr type local" and "fib saddr oif missing".
+// Rendering the register's raw value instead would make --explain unable
+// to show the rule that decided an IPv6 verdict on a firewalld host.
+func TestRenderRuleShowsFib(t *testing.T) {
+	addrType := facts.Rule{Handle: 81, Exprs: []facts.Expr{
+		{Kind: facts.ExprFib, Fib: &facts.FibExpr{Query: "addrtype", Register: 1, Source: "daddr"}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: natHex32(2)}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	if got := RenderRule(addrType); !strings.Contains(got, "fib daddr type local") {
+		t.Errorf("RenderRule = %q, want nft's own spelling", got)
+	}
+
+	missing := facts.Rule{Handle: 82, Exprs: []facts.Expr{
+		{Kind: facts.ExprFib, Fib: &facts.FibExpr{Query: "oif-present", Register: 1, Source: "saddr", MatchesIface: true}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: natHex32(0)}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "drop"}},
+	}}
+	if got := RenderRule(missing); !strings.Contains(got, "fib saddr . iif oif missing") {
+		t.Errorf("RenderRule = %q, want the reverse-path check spelled as nft spells it", got)
+	}
+}
+
+// natHex32 writes a 4-byte value the way a register holds it.
+func natHex32(v uint32) string {
+	b := make([]byte, 4)
+	binary.NativeEndian.PutUint32(b, v)
+	return hex.EncodeToString(b)
 }

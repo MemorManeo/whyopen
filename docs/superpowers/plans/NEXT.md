@@ -309,8 +309,10 @@ evidence or a user rather than a decision.
   rather than a decoded one: firewalld's IPv6 reverse-path check
   (`fib saddr . mark . iif oif missing`) depends on the host's routing
   table, which whyopen does not collect, so IPv6 verdicts there are
-  unknown. Collecting routes would close it and is not obviously worth
-  the collector it would need.
+  unknown. That gap is closed too, in v1.3: whyopen reads the routing
+  table from /proc, and `docs/decisions/0012-fib-and-routes.md` records
+  why it only ever concludes a route is present and never that one is
+  missing.
 - **A native expression whyopen cannot type keeps nothing.** Decision 0007
   closed this for xt payloads. There is no equivalent opaque blob behind a
   typed native expression, so the same fix does not apply, and what

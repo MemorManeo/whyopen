@@ -122,10 +122,10 @@ If you find one, it is the most serious kind of bug this tool can have.
   firewalld: one job installs the daemon, asserts that every native
   expression it emits decodes, and checks that a port `firewall-cmd` was
   told to open reports `reachable` while one it was not reports
-  `filtered`. The one construct still undecoded there is firewalld's IPv6
-  reverse-path check (`fib saddr . mark . iif oif missing`), which depends
-  on the host's routing table; whyopen does not collect routes, so IPv6
-  verdicts on such a host report `unknown`.
+  `filtered`. That job is what found firewalld's `ct status dnat` and its
+  reverse-path `fib` rule, neither of which a hand-written imitation had
+  produced; both decode now, and the job fails if the daemon emits
+  anything else whyopen cannot read.
 - Must run as **root** (or at least with `CAP_NET_ADMIN`) to list the
   ruleset over netlink and to attribute every listening socket to a
   process. Run unprivileged and whyopen still lists every listener it can

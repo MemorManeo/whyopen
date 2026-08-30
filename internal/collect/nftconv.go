@@ -161,6 +161,9 @@ func convertExpr(e expr.Any) facts.Expr {
 			To:       hex.EncodeToString(v.ToData),
 		}}
 
+	case *expr.Fib:
+		return convertFib(v)
+
 	case *expr.Lookup:
 		return convertLookup(v)
 	case *expr.Verdict:
@@ -229,6 +232,44 @@ func convertCt(v *expr.Ct) facts.Expr {
 		Key:      key,
 		Register: v.Register,
 	}}
+}
+
+// convertFib decodes the two fib shapes whyopen can answer, captured in
+// docs/decisions/0012-fib-and-routes.md, and refuses the rest.
+//
+// A shape that puts an interface index or name in the register is refused
+// rather than approximated: something downstream compares that register,
+// and inventing a value for it would resolve a rule on a number whyopen
+// made up.
+func convertFib(v *expr.Fib) facts.Expr {
+	unknown := facts.Expr{Kind: facts.ExprUnknown, Note: fmt.Sprintf("%T", v)}
+
+	source := ""
+	switch {
+	case v.FlagSADDR && !v.FlagDADDR:
+		source = "saddr"
+	case v.FlagDADDR && !v.FlagSADDR:
+		source = "daddr"
+	default:
+		return unknown
+	}
+
+	switch {
+	case v.ResultADDRTYPE && !v.ResultOIF && !v.ResultOIFNAME:
+		// The native spelling of the addrtype match whyopen has decoded
+		// through the xt path since v0.1.
+		return facts.Expr{Kind: facts.ExprFib, Fib: &facts.FibExpr{
+			Query: "addrtype", Register: v.Register, Source: source,
+		}}
+	case v.ResultOIF && v.FlagPRESENT && !v.ResultOIFNAME && !v.ResultADDRTYPE:
+		// "oif missing": the register gets 1 when a route is found and 0
+		// when it is not.
+		return facts.Expr{Kind: facts.ExprFib, Fib: &facts.FibExpr{
+			Query: "oif-present", Register: v.Register, Source: source,
+			MatchesIface: v.FlagIIF,
+		}}
+	}
+	return unknown
 }
 
 // convertLookup decodes a native `lookup` expression unconditionally: it

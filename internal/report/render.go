@@ -28,6 +28,10 @@ func RenderRule(r facts.Rule) string {
 			pendingMask = e.Bitwise.Mask
 		case facts.ExprCt:
 			pending = renderCtKey(e.Ct.Key)
+		case facts.ExprFib:
+			pending = renderFibField(e.Fib)
+			pendingMask = ""
+
 		case facts.ExprRange:
 			parts = append(parts, renderRange(pending, e.Range))
 			pending, pendingMask = "", ""
@@ -113,6 +117,20 @@ func renderCtKey(key string) string {
 	return "ct " + key
 }
 
+// renderFibField names the fib question so the comparison that follows
+// reads as nft spells it: "fib daddr type local", "fib saddr . iif oif
+// missing".
+func renderFibField(f *facts.FibExpr) string {
+	if f.Query == "addrtype" {
+		return "fib " + f.Source + " type"
+	}
+	key := "fib " + f.Source
+	if f.MatchesIface {
+		key += " . iif"
+	}
+	return key + " oif"
+}
+
 // renderRange spells a range the way nft does, "dport 3000-4000" or
 // "dport != 3000-4000", with the bounds read in the field's own units
 // rather than left as the hex the register holds.
@@ -160,6 +178,35 @@ func cmpValue(field, data string) string {
 	if err != nil {
 		return data
 	}
+	// A fib result reads as a name rather than as the number the register
+	// holds: the address types are RTN_* values, and the presence lookup
+	// is what nft calls "missing" when it is zero.
+	if strings.HasPrefix(field, "fib ") {
+		v := uint32(0)
+		if len(b) == 4 {
+			v = binary.NativeEndian.Uint32(b)
+		}
+		if strings.HasSuffix(field, " type") {
+			switch v {
+			case 1:
+				return "unicast"
+			case 2:
+				return "local"
+			case 3:
+				return "broadcast"
+			case 4:
+				return "anycast"
+			case 5:
+				return "multicast"
+			}
+			return data
+		}
+		if v == 0 {
+			return "missing"
+		}
+		return "present"
+	}
+
 	switch field {
 	case "iifname", "oifname":
 		return `"` + strings.TrimRight(string(b), "\x00") + `"`

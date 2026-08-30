@@ -95,20 +95,12 @@ func TestFirewalldEmitsNothingWhyopenCannotDecode(t *testing.T) {
 	if len(undecodedXt) > 0 {
 		t.Logf("undecoded xt extensions (not firewalld's, on a runner that also has Docker): %v", undecodedXt)
 	}
-	// Documented gaps, each one a construct whyopen refuses for a reason
-	// rather than has not got to. Anything outside this list is a real
-	// finding and fails the job, which is what this test is for.
-	//
-	// *expr.Fib: firewalld's IPv6 reverse-path check, `fib saddr . mark .
-	// iif oif missing drop`. Whether that lookup finds a route back to
-	// whyopen's synthetic source depends on the host's routing table,
-	// which whyopen does not collect, so it cannot be answered. It sits
-	// behind a `meta nfproto ipv6` test, so it only reaches IPv6 verdicts.
-	documented := map[string]bool{"*expr.Fib": true}
-	for name, count := range unknown {
-		if !documented[name] {
-			t.Errorf("firewalld emitted %s (%d times), which whyopen cannot decode and does not document", name, count)
-		}
+	// The allowlist is empty again. It held *expr.Fib while whyopen could
+	// not answer firewalld's reverse-path check; decision 0012 closed
+	// that, and an allowlist that outlives its reason is how a test stops
+	// finding things.
+	if len(unknown) > 0 {
+		t.Errorf("firewalld emitted native expressions whyopen cannot decode: %v", unknown)
 	}
 }
 

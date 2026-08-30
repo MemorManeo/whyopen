@@ -31,6 +31,13 @@ type Packet struct {
 	// That errs toward reporting the packet as continuing rather than as
 	// stopped, which is the safe direction for an exposure audit.
 	DNATApplied bool
+	// SrcRouteDev is the device the host would route a reply to Src out
+	// of, or empty when whyopen could not resolve one. It answers a fib
+	// presence lookup and nothing else. Empty is not "no route exists":
+	// it is "whyopen cannot say", which is why the evaluator refuses
+	// rather than concluding the route is missing
+	// (docs/decisions/0012-fib-and-routes.md).
+	SrcRouteDev string
 }
 
 // Action is what a matching rule does.

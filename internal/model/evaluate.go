@@ -239,6 +239,10 @@ func evaluateAtDestination(f facts.Facts, zone Zone, ep Endpoint, family string,
 		Src: src, Dst: c.IP,
 		SrcPort: 41234, DstPort: ep.Port,
 		InIface: c.Iface, CtState: "new", DstIsLocal: true,
+		// Resolved once here rather than in the matcher, which stays pure
+		// over the packet: a fib presence lookup asks which device the
+		// reply would leave by.
+		SrcRouteDev: routeDevFor(f.Host.Routes, src),
 	}
 
 	pre, hits := Traverse(f.Ruleset, family, "prerouting", pkt)
@@ -295,6 +299,44 @@ func evaluateAtDestination(f facts.Facts, zone Zone, ep Endpoint, family string,
 	res, hits := Traverse(f.Ruleset, family, "input", pkt)
 	v.Path = append(v.Path, hits...)
 	return finish(v, res, fmt.Sprintf("via %s: delivered locally, so the input hook decides", c.IP))
+}
+
+// routeDevFor answers which device the host would send a reply to addr
+// out of, or empty when whyopen cannot say. Empty covers three cases that
+// all mean the same thing to the caller: no route matched, the routes
+// whyopen read do not cover this family, and two equally specific routes
+// leave by different devices, which is what multipath looks like and also
+// what a half-read table looks like.
+//
+// The caller reads a device as permission to conclude a route is there, so
+// everything uncertain has to come back empty. See
+// docs/decisions/0012-fib-and-routes.md.
+func routeDevFor(routes []facts.Route, addr netip.Addr) string {
+	family := "ip"
+	if addr.Is6() {
+		family = "ip6"
+	}
+	best, dev := -1, ""
+	for _, r := range routes {
+		if r.Family != family {
+			continue
+		}
+		dest, err := netip.ParseAddr(r.Dest)
+		if err != nil {
+			continue
+		}
+		p := netip.PrefixFrom(dest, r.PrefixLen)
+		if !p.IsValid() || !p.Contains(addr) {
+			continue
+		}
+		switch {
+		case r.PrefixLen > best:
+			best, dev = r.PrefixLen, r.Device
+		case r.PrefixLen == best && r.Device != dev:
+			dev = "" // equally specific, and they disagree
+		}
+	}
+	return dev
 }
 
 // forwarding reports whether the kernel would route a packet that arrived

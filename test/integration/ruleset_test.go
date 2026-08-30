@@ -698,6 +698,41 @@ table inet filter {
 	}
 }
 
+// firewalld's reverse-path rule, which sits in prerouting on every host it
+// manages and so is walked for every packet. Undecoded it made every IPv6
+// verdict on such a host unknown. The namespace has a route back out the
+// arrival interface, so the lookup is present, the drop does not fire, and
+// the port resolves.
+func TestFibReversePathResolves(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	listenIn(t, ns, "0.0.0.0", "8080")
+	applyNftRuleset(t, ns, `
+table inet filter {
+	chain prerouting {
+		type filter hook prerouting priority -300; policy accept;
+		fib saddr . iif oif missing drop
+	}
+
+	chain input {
+		type filter hook input priority 0; policy accept;
+		fib daddr type local accept
+	}
+}
+`)
+
+	v := verdictFor(evaluate(collectIn(t, ns)), 8080, "ip")
+	if v == nil {
+		t.Fatal("no verdict for 8080")
+	}
+	if v.Result != "reachable" {
+		t.Fatalf("8080 = %s (%s), want reachable: the route back leaves the arrival interface, "+
+			"so nothing is missing, and the destination is local", v.Result, v.Reason)
+	}
+}
+
 // The negated form, which is the one that actually produces an
 // expr.Range. The chain accepts by default and drops everything outside
 // the range, so a port inside it survives and one outside does not.
