@@ -161,6 +161,18 @@ func convertExpr(e expr.Any) facts.Expr {
 			To:       hex.EncodeToString(v.ToData),
 		}}
 
+	case *expr.Immediate:
+		// A constant into a register. The library turns an immediate that
+		// writes the verdict register into an expr.Verdict before whyopen
+		// sees it, so anything arriving here is data.
+		return facts.Expr{Kind: facts.ExprImmediate, Immediate: &facts.ImmediateExpr{
+			Register: v.Register,
+			Data:     hex.EncodeToString(v.Data),
+		}}
+
+	case *expr.NAT:
+		return convertNAT(v)
+
 	case *expr.Fib:
 		return convertFib(v)
 
@@ -231,6 +243,31 @@ func convertCt(v *expr.Ct) facts.Expr {
 	return facts.Expr{Kind: facts.ExprCt, Ct: &facts.CtExpr{
 		Key:      key,
 		Register: v.Register,
+	}}
+}
+
+// convertNAT decodes a native address rewrite. It names the registers
+// holding the new address and port rather than carrying them, so the
+// immediates that filled those registers have to be read first, which is
+// what the capture found: `dnat to 192.0.2.50:80` is two immediates and
+// this expression.
+//
+// Only a destination rewrite is decoded. Source NAT and masquerade happen
+// in postrouting, which whyopen does not walk, and decoding them here
+// would mean modelling something no verdict depends on.
+func convertNAT(v *expr.NAT) facts.Expr {
+	if v.Type != expr.NATTypeDestNAT {
+		return facts.Expr{Kind: facts.ExprUnknown, Note: fmt.Sprintf("%T", v)}
+	}
+	family := "ip"
+	if v.Family == unix.NFPROTO_IPV6 {
+		family = "ip6"
+	}
+	return facts.Expr{Kind: facts.ExprNAT, NAT: &facts.NATExpr{
+		Type:          "dnat",
+		Family:        family,
+		AddrRegister:  v.RegAddrMin,
+		ProtoRegister: v.RegProtoMin,
 	}}
 }
 

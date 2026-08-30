@@ -835,3 +835,35 @@ func TestConvertMetaInterfaceIndexKeys(t *testing.T) {
 		}
 	}
 }
+
+// A native dnat: two immediates fill the registers the nat expression
+// names, which is what the capture found a hand-written `dnat to` compiles
+// to. Docker's version of the same rewrite arrives as an xt target.
+func TestConvertNativeDNAT(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Immediate{Register: 1, Data: []byte{192, 0, 2, 50}},
+		&expr.Immediate{Register: 2, Data: []byte{0, 80}},
+		&expr.NAT{Type: expr.NATTypeDestNAT, Family: unix.NFPROTO_IPV4, RegAddrMin: 1, RegProtoMin: 2},
+	})
+	if got[0].Kind != facts.ExprImmediate || got[0].Immediate.Data != "c0000232" {
+		t.Errorf("immediate = %+v, want the address", got[0].Immediate)
+	}
+	if got[2].Kind != facts.ExprNAT || got[2].NAT == nil {
+		t.Fatalf("nat = %+v, want a decoded dnat", got[2])
+	}
+	n := got[2].NAT
+	if n.Type != "dnat" || n.Family != "ip" || n.AddrRegister != 1 || n.ProtoRegister != 2 {
+		t.Errorf("nat = %+v", n)
+	}
+}
+
+// Source NAT and masquerade run in postrouting, which whyopen does not
+// walk, so decoding them would model something no verdict depends on.
+func TestConvertSourceNATStaysUnknown(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.NAT{Type: expr.NATTypeSourceNAT, Family: unix.NFPROTO_IPV4, RegAddrMin: 1},
+	})
+	if got[0].Kind != facts.ExprUnknown {
+		t.Fatalf("snat = %+v, want unknown", got[0])
+	}
+}

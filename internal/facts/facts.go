@@ -257,7 +257,15 @@ const (
 	// two of its shapes: the address type of the packet's source or
 	// destination, and whether a route back to the source exists. See
 	// docs/decisions/0012-fib-and-routes.md.
-	ExprFib     ExprKind = "fib"
+	ExprFib ExprKind = "fib"
+	// ExprImmediate writes a constant into a register. It is how the
+	// address and port of a native `dnat to` reach the nat expression
+	// that applies them.
+	ExprImmediate ExprKind = "immediate"
+	// ExprNAT is a native address rewrite. Docker's port forwards arrive
+	// as an xt DNAT target instead; this is the same thing written by
+	// hand.
+	ExprNAT     ExprKind = "nat"
 	ExprVerdict ExprKind = "verdict"
 	ExprXt      ExprKind = "xt"
 	// ExprOther is recorded for completeness and is treated by the evaluator
@@ -276,18 +284,39 @@ const (
 )
 
 type Expr struct {
-	Kind    ExprKind     `json:"kind"`
-	Payload *PayloadExpr `json:"payload,omitempty"`
-	Cmp     *CmpExpr     `json:"cmp,omitempty"`
-	Meta    *MetaExpr    `json:"meta,omitempty"`
-	Bitwise *BitwiseExpr `json:"bitwise,omitempty"`
-	Ct      *CtExpr      `json:"ct,omitempty"`
-	Lookup  *LookupExpr  `json:"lookup,omitempty"`
-	Range   *RangeExpr   `json:"range,omitempty"`
-	Fib     *FibExpr     `json:"fib,omitempty"`
-	Verdict *VerdictExpr `json:"verdict,omitempty"`
-	Xt      *XtExpr      `json:"xt,omitempty"`
-	Note    string       `json:"note,omitempty"`
+	Kind      ExprKind       `json:"kind"`
+	Payload   *PayloadExpr   `json:"payload,omitempty"`
+	Cmp       *CmpExpr       `json:"cmp,omitempty"`
+	Meta      *MetaExpr      `json:"meta,omitempty"`
+	Bitwise   *BitwiseExpr   `json:"bitwise,omitempty"`
+	Ct        *CtExpr        `json:"ct,omitempty"`
+	Lookup    *LookupExpr    `json:"lookup,omitempty"`
+	Range     *RangeExpr     `json:"range,omitempty"`
+	Fib       *FibExpr       `json:"fib,omitempty"`
+	Immediate *ImmediateExpr `json:"immediate,omitempty"`
+	NAT       *NATExpr       `json:"nat,omitempty"`
+	Verdict   *VerdictExpr   `json:"verdict,omitempty"`
+	Xt        *XtExpr        `json:"xt,omitempty"`
+	Note      string         `json:"note,omitempty"`
+}
+
+// ImmediateExpr writes a constant into a register. Data is lowercase hex,
+// the same convention CmpExpr.Data uses.
+type ImmediateExpr struct {
+	Register uint32 `json:"register"`
+	Data     string `json:"data"`
+}
+
+// NATExpr is a native address rewrite. It names the registers holding the
+// new address and port rather than carrying them, so the immediates that
+// filled those registers have to be read first. A zero ProtoRegister
+// means the rule rewrites the address and leaves the port alone, which is
+// what `dnat to <addr>` without a port compiles to.
+type NATExpr struct {
+	Type          string `json:"type"` // dnat | snat
+	Family        string `json:"family"`
+	AddrRegister  uint32 `json:"addr_register"`
+	ProtoRegister uint32 `json:"proto_register,omitempty"`
 }
 
 // FibExpr is a fib lookup reduced to the two questions whyopen can answer.

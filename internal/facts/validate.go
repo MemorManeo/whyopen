@@ -52,6 +52,10 @@ func (e Expr) validate() error {
 		missing = e.Range == nil
 	case ExprFib:
 		missing = e.Fib == nil
+	case ExprImmediate:
+		missing = e.Immediate == nil
+	case ExprNAT:
+		missing = e.NAT == nil
 	case ExprVerdict:
 		missing = e.Verdict == nil
 	case ExprXt:

@@ -265,3 +265,16 @@ func natHex32(v uint32) string {
 	binary.NativeEndian.PutUint32(b, v)
 	return hex.EncodeToString(b)
 }
+
+// A native rewrite names registers rather than an address, so rendering
+// it means resolving what the rule put in them.
+func TestRenderRuleShowsANativeDNAT(t *testing.T) {
+	rule := facts.Rule{Handle: 151, Exprs: []facts.Expr{
+		{Kind: facts.ExprImmediate, Immediate: &facts.ImmediateExpr{Register: 1, Data: "c0000232"}},
+		{Kind: facts.ExprImmediate, Immediate: &facts.ImmediateExpr{Register: 2, Data: "0050"}},
+		{Kind: facts.ExprNAT, NAT: &facts.NATExpr{Type: "dnat", Family: "ip", AddrRegister: 1, ProtoRegister: 2}},
+	}}
+	if got := RenderRule(rule); !strings.Contains(got, "dnat to 192.0.2.50:80") {
+		t.Fatalf("RenderRule = %q, want the rewrite spelled out", got)
+	}
+}

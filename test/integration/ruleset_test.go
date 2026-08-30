@@ -988,6 +988,60 @@ func describeExprs(exprs []facts.Expr) string {
 	return strings.Join(parts, " ")
 }
 
+// A native dnat, end to end. Docker's port forwards arrive as an xt
+// target and have been decoded since v0.1; a rule a person wrote produces
+// a nat expression naming registers that immediates filled, which whyopen
+// could not read at all, so any port such a rule matched came back
+// unknown.
+//
+// A local listener gives whyopen an endpoint to reason about, so the
+// rewrite is what the verdict turns on rather than the endpoint discovery
+// gap the next test documents.
+func TestNativeDNATResolves(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	listenIn(t, ns, "0.0.0.0", "9000")
+	nsRun(t, ns, "ip", "link", "add", "lan0", "type", "dummy")
+	nsRun(t, ns, "ip", "addr", "add", "192.0.2.1/24", "dev", "lan0")
+	nsRun(t, ns, "ip", "link", "set", "lan0", "up")
+	nsRun(t, ns, "sysctl", "-qw", "net.ipv4.ip_forward=1")
+
+	applyNftRuleset(t, ns, `
+table ip nat {
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		tcp dport 9000 dnat to 192.0.2.50:80
+	}
+}
+
+table inet filter {
+	chain forward {
+		type filter hook forward priority 0; policy accept;
+	}
+
+	chain input {
+		type filter hook input priority 0; policy drop;
+	}
+}
+`)
+
+	v := verdictFor(evaluate(collectIn(t, ns)), 9000, "ip")
+	if v == nil {
+		t.Fatal("no verdict for 9000")
+	}
+	if v.Result != "reachable" {
+		t.Fatalf("9000 = %s (%s), want reachable: the packet is rewritten to 192.0.2.50 and the "+
+			"forward chain accepts it", v.Result, v.Reason)
+	}
+	// The reason has to name where the packet went, or a reader cannot
+	// tell this apart from a locally delivered port.
+	if !strings.Contains(v.Reason, "192.0.2.50") {
+		t.Errorf("reason = %q, want it to name the rewrite target", v.Reason)
+	}
+}
+
 // A host that forwards a port to another machine on its LAN, which is
 // what a router or a VM host does and what nothing in this suite has ever
 // modelled. Docker's publishes look like this too, but whyopen learns

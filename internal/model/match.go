@@ -148,6 +148,20 @@ func MatchRule(pkt *Packet, r facts.Rule, sets []facts.Set) (Outcome, Action) {
 				return OutcomeUnknown, act
 			}
 
+		case facts.ExprImmediate:
+			data, err := hex.DecodeString(e.Immediate.Data)
+			if err != nil {
+				return OutcomeUnknown, act
+			}
+			regs[e.Immediate.Register] = data
+
+		case facts.ExprNAT:
+			a, ok := natAction(pkt, e.NAT, regs)
+			if !ok {
+				return OutcomeUnknown, act
+			}
+			act = a
+
 		case facts.ExprFib:
 			b, ok := fibBytes(pkt, e.Fib)
 			if !ok {
@@ -493,6 +507,37 @@ func fibBytes(pkt *Packet, f *facts.FibExpr) ([]byte, bool) {
 		return nil, false
 	}
 	return b, true
+}
+
+// natAction resolves a native destination rewrite into the action the
+// walker applies, reading the address and port out of the registers the
+// rule's immediates filled. A register nothing wrote cannot be resolved
+// into an address, and inventing one would rewrite the packet to
+// somewhere the ruleset never named.
+//
+// A rule with no proto register rewrites the address and leaves the port
+// alone, which is what `dnat to <addr>` without a port compiles to.
+func natAction(pkt *Packet, n *facts.NATExpr, regs map[uint32][]byte) (Action, bool) {
+	if n.Type != "dnat" {
+		return Action{}, false
+	}
+	raw, ok := regs[n.AddrRegister]
+	if !ok {
+		return Action{}, false
+	}
+	ip, ok := netip.AddrFromSlice(raw)
+	if !ok {
+		return Action{}, false
+	}
+	port := pkt.DstPort
+	if n.ProtoRegister != 0 {
+		p, ok := regs[n.ProtoRegister]
+		if !ok || len(p) != 2 {
+			return Action{}, false
+		}
+		port = binary.BigEndian.Uint16(p)
+	}
+	return Action{Kind: "dnat", DNAT: &DNAT{IP: ip, Port: port}}, true
 }
 
 // ctStatusDstNatBit is IPS_DST_NAT, bit 5 of the kernel's

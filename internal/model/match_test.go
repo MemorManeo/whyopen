@@ -1504,3 +1504,70 @@ func TestOtherUnmodelledMetaKeysStillRefuse(t *testing.T) {
 		t.Fatalf("out = %v, want unknown", out)
 	}
 }
+
+// A hand-written `dnat to 192.0.2.50:80` loads the address and the port
+// into registers with immediates and then names those registers in a nat
+// expression. Docker's port forwards arrive as an xt DNAT target instead,
+// which whyopen has decoded since v0.1, so this is the same rewrite
+// written by a person rather than by Docker.
+func nativeDNATRule(addr, port string, protoReg uint32) facts.Rule {
+	exprs := []facts.Expr{
+		{Kind: facts.ExprImmediate, Immediate: &facts.ImmediateExpr{Register: 1, Data: addr}},
+	}
+	if protoReg != 0 {
+		exprs = append(exprs, facts.Expr{Kind: facts.ExprImmediate,
+			Immediate: &facts.ImmediateExpr{Register: protoReg, Data: port}})
+	}
+	exprs = append(exprs, facts.Expr{Kind: facts.ExprNAT, NAT: &facts.NATExpr{
+		Type: "dnat", Family: "ip", AddrRegister: 1, ProtoRegister: protoReg}})
+	return facts.Rule{Handle: 141, Exprs: exprs}
+}
+
+func TestNativeDNATRewritesTheDestination(t *testing.T) {
+	out, act := MatchRule(testPacket(), nativeDNATRule("c0000232", "0050", 2), nil)
+	if out != OutcomeMatch {
+		t.Fatalf("out = %v, want match", out)
+	}
+	if act.Kind != "dnat" || act.DNAT == nil {
+		t.Fatalf("act = %+v, want a dnat action", act)
+	}
+	if act.DNAT.IP.String() != "192.0.2.50" || act.DNAT.Port != 80 {
+		t.Fatalf("dnat = %s:%d, want 192.0.2.50:80", act.DNAT.IP, act.DNAT.Port)
+	}
+}
+
+// `dnat to 192.0.2.51` with no port leaves the port alone, which the
+// capture showed as a nat expression naming no proto register.
+func TestNativeDNATWithoutAPortKeepsTheOriginal(t *testing.T) {
+	p := testPacket()
+	p.DstPort = 8081
+	_, act := MatchRule(p, nativeDNATRule("c0000233", "", 0), nil)
+	if act.DNAT == nil || act.DNAT.Port != 8081 {
+		t.Fatalf("dnat = %+v, want the original port kept", act.DNAT)
+	}
+}
+
+// Everything else a nat expression can be is refused. Source NAT and
+// masquerade happen in postrouting, which whyopen does not walk, and a
+// redirect is a different expression whose shape was never captured.
+func TestNativeSNATIsRefused(t *testing.T) {
+	rule := facts.Rule{Handle: 142, Exprs: []facts.Expr{
+		{Kind: facts.ExprImmediate, Immediate: &facts.ImmediateExpr{Register: 1, Data: "c0000232"}},
+		{Kind: facts.ExprNAT, NAT: &facts.NATExpr{Type: "snat", Family: "ip", AddrRegister: 1}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule, nil); out != OutcomeUnknown {
+		t.Fatalf("out = %v, want unknown", out)
+	}
+}
+
+// A nat naming a register nothing wrote cannot be resolved into an
+// address, and inventing one would rewrite the packet to somewhere the
+// ruleset never said.
+func TestNativeDNATWithAnUnwrittenRegisterIsRefused(t *testing.T) {
+	rule := facts.Rule{Handle: 143, Exprs: []facts.Expr{
+		{Kind: facts.ExprNAT, NAT: &facts.NATExpr{Type: "dnat", Family: "ip", AddrRegister: 9}},
+	}}
+	if out, _ := MatchRule(testPacket(), rule, nil); out != OutcomeUnknown {
+		t.Fatalf("out = %v, want unknown", out)
+	}
+}

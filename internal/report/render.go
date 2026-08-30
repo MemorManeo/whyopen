@@ -15,8 +15,9 @@ import (
 // It is for human eyes only: whyopen never re-emits a rule.
 func RenderRule(r facts.Rule) string {
 	var parts []string
-	var pending string     // what the next cmp is comparing against
-	var pendingMask string // hex mask from a bitwise expr between payload and cmp, e.g. a subnet match
+	var pending string                // what the next cmp is comparing against
+	immediates := map[uint32]string{} // register contents a nat expression will name
+	var pendingMask string            // hex mask from a bitwise expr between payload and cmp, e.g. a subnet match
 
 	for _, e := range r.Exprs {
 		switch e.Kind {
@@ -28,6 +29,15 @@ func RenderRule(r facts.Rule) string {
 			pendingMask = e.Bitwise.Mask
 		case facts.ExprCt:
 			pending = renderCtKey(e.Ct.Key)
+		case facts.ExprImmediate:
+			// Remembered rather than printed: it is the value the nat
+			// expression below will name by register.
+			immediates[e.Immediate.Register] = e.Immediate.Data
+
+		case facts.ExprNAT:
+			parts = append(parts, renderNAT(e.NAT, immediates))
+			pending, pendingMask = "", ""
+
 		case facts.ExprFib:
 			pending = renderFibField(e.Fib)
 			pendingMask = ""
@@ -115,6 +125,23 @@ func renderCtKey(key string) string {
 		return "ct state"
 	}
 	return "ct " + key
+}
+
+// renderNAT spells a native rewrite the way nft does, resolving the
+// registers the rule filled back into the address and port they hold.
+func renderNAT(n *facts.NATExpr, immediates map[uint32]string) string {
+	addr := "<unresolved address>"
+	if raw, ok := immediates[n.AddrRegister]; ok {
+		addr = cmpValue("daddr", raw)
+	}
+	if n.ProtoRegister == 0 {
+		return "dnat to " + addr
+	}
+	port := "<unresolved port>"
+	if raw, ok := immediates[n.ProtoRegister]; ok {
+		port = cmpValue("dport", raw)
+	}
+	return "dnat to " + addr + ":" + port
 }
 
 // renderFibField names the fib question so the comparison that follows
