@@ -319,26 +319,50 @@ evidence or a user rather than a decision.
   whyopen does not decode is recorded as `ExprUnknown` with the type name.
   Worth revisiting only if a real ruleset turns up where it matters.
 
-## Found in v1.6, not yet fixed: a forwarded port is invisible
+## Found in v1.6, closed: a forwarded port was invisible
 
-whyopen finds ports to report from two places: listening sockets on this
-host, and Docker publishes. A router or VM host that forwards a port to a
-machine on its LAN has neither. `TestHandWrittenPortForwardIsVisible`
-applies exactly that rule and whyopen reports **nothing at all** for the
-port: not `unknown`, not a row, silence.
+whyopen found ports in two places, listening sockets on this host and
+Docker publishes. A router or a VM host that forwards a port to a machine
+on its LAN has neither, and `TestHandWrittenPortForwardIsVisible` applied
+exactly that rule and found whyopen reported **nothing at all** for the
+port: not `unknown`, not a row, silence. A reader saw no entry and
+concluded nothing was exposed while the host forwarded the port to a
+machine the table never mentioned.
 
-That is worse than a wrong verdict. A user reading the table sees no entry
-and concludes nothing is exposed, while the host forwards the port to a
-machine the table never mentions.
+Closed by a third source of endpoints: `internal/model/forwards.go` scans
+every prerouting base chain, and the chains they jump to, for a
+destination rewrite, and turns each one into candidate ports. The
+candidates then go through the same traversal every socket and every
+publish goes through, so a rule that never actually matches produces an
+honest `filtered` row rather than a wrong `reachable` one, and the scan is
+free to err toward producing rows. Both rewrite shapes feed it: the native
+nat expression v1.6 decoded and the xt DNAT target v0.1 did.
 
-Closing it means a third source of endpoints: a static scan of the ruleset
-for destination rewrites, turning each one into an endpoint the way a
-Docker publish already becomes one. Both halves now exist to build it on,
-since v1.6 decodes the native rewrite and v0.1 decoded the xt one. The
-design questions are what such an endpoint is called (there is no process
-and no container to name as its owner), what `reachable` means for a port
-whose service lives on a machine whyopen cannot see, and whether a rewrite
-with no port constraint means every port is forwarded.
+The three design questions the finding named were answered in
+`docs/decisions/0014-forwarded-ports-as-endpoints.md`. The endpoint is
+named for its destination (`Kind` is `forward`, the owner column reads
+`forwarded to 192.0.2.50:80`, and the bind address is left empty because
+the traversal decides which host address the rewrite applies at).
+`reachable` means the packet is forwarded there and stops short of
+claiming a listener, which the reason string says in as many words, the
+same honesty a Docker publish already gets one step further out. And a
+rewrite whyopen cannot reduce to named ports, one with no port constraint
+at all or one matching a range, becomes a warning naming the rule rather
+than a row, because 65535 invented rows are not an answer and silence was
+the bug.
 
-None of that is hard. It is a decision about what the table promises, and
-it should be made deliberately rather than while fixing something else.
+What is left of it:
+
+- A rewrite whyopen cannot reduce to ports does not change the exit code.
+  It is in the warnings block and in `--json`, so a person sees it and a
+  machine reading the document sees it, but a CI job reading only the exit
+  code does not. Whether "this host forwards every port to somewhere"
+  should fail a run is a policy question, and the policy file has no way
+  to express it today.
+- `whyopen policy init` does not mention those warnings either. A
+  generated policy silently covers only the ports that became rows.
+- The scan reads a port constraint written as an equality or as a flat
+  set. A port matched through a bitmask, an interval set, a map, a
+  concatenated key type, or a set the document does not carry are all
+  warnings rather than rows, the same refusals `internal/model/match.go`
+  makes for the same reasons.

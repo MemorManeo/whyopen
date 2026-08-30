@@ -53,6 +53,21 @@ thirty-nine rows.
   into another network namespace, so a publish with nothing behind it
   reads the same as a live one. `check --probe-from` is what tells the two
   apart.
+- A port this host **forwards to another machine** is a row too, even
+  though nothing here listens on it. A router or a VM host writing
+  `tcp dport 8080 dnat to 192.0.2.50:80` has no socket and no Docker
+  publish for 8080, and whyopen used to report nothing at all for it,
+  which reads as "not exposed". Such a row is owned by its destination:
+
+  ```
+  reachable  8080/tcp  IPv4  forwarded to 192.0.2.50:80  -  via 203.0.113.10: DNAT to 192.0.2.50:80, then the forward hook; whyopen cannot see 192.0.2.50, so this says the packet is forwarded there, not that anything answers
+  ```
+
+  A rewrite whyopen cannot reduce to named ports, one with no port
+  constraint at all or one matching a range, is reported in the warnings
+  block instead of as a row, naming the rule so you can go look at it.
+  [Decision 0014](docs/decisions/0014-forwarded-ports-as-endpoints.md) is
+  why it works that way.
 
 ## What `unknown` means
 
