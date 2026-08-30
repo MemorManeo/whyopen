@@ -362,10 +362,10 @@ What is left of it:
   code.~~ Done: `fail_on_unknown` covers it, through
   `policy.Result.Unreadable`, and the policy block says which warning
   caused the exit. Without the flag nothing about the exit codes moves.
-- `whyopen policy init` does not mention those warnings. A generated
-  policy silently covers only the ports that became rows, though the very
-  next `check --policy` exits 2 on them, since a generated policy sets
-  `fail_on_unknown: true`.
+- ~~`whyopen policy init` does not mention those warnings.~~ Done: the
+  generated file carries them as a comment beside the ports it could not
+  resolve, wrapped to the width the rest of the file is written to, and
+  still parses back through `Load`.
 - The scan reads a port constraint written as an equality or as a flat
   set. A port matched through a bitmask, an interval set, a map, a
   concatenated key type, or a set the document does not carry are all

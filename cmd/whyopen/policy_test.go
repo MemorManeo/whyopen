@@ -216,3 +216,22 @@ func TestCheckExitsUnknownForAForwardItCannotReduceToPorts(t *testing.T) {
 		t.Fatalf("exit = %d, want %d (exitOK) with no policy at all", got, exitOK)
 	}
 }
+
+// The generated file has to name what it could not account for. A policy
+// adopted from a host that forwards every port to somewhere would
+// otherwise cover only the ports that became rows, and read as though it
+// covered the host.
+func TestPolicyInitNamesAForwardItCouldNotReduceToPorts(t *testing.T) {
+	path := forwardEveryPortFacts(t)
+
+	var code int
+	out := captureStdout(t, func() {
+		code = runPolicy([]string{"init", "-facts", path})
+	})
+	if code != exitOK {
+		t.Fatalf("policy init exit = %d, want %d", code, exitOK)
+	}
+	if !strings.Contains(out, "192.0.2.50") || !strings.Contains(out, "forwards every port") {
+		t.Fatalf("generated policy says nothing about the rewrite it could not name:\n%s", out)
+	}
+}

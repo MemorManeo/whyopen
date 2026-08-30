@@ -160,7 +160,10 @@ func runPolicy(args []string) int {
 	}
 
 	p, unresolved := policy.Init(model.Evaluate(f, model.InternetZone()))
-	b := policy.Marshal(p, unresolved)
+	// The rewrites that never became rows go into the file as comments:
+	// no allow entry can cover a rule that names no port, and this is the
+	// moment someone is deciding what their host may expose.
+	b := policy.Marshal(p, unresolved, model.ForwardNotes(f))
 
 	if *out == "-" {
 		os.Stdout.Write(b)

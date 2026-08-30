@@ -126,6 +126,11 @@ and what it runs are all outside what a firewall snapshot can answer.
   changed from "the snapshot is incomplete" to "the table above is not the
   whole story". The old heading described only what collection could not
   see.
+- `whyopen policy init` writes such a warning into the generated file as
+  a comment, beside the ports it could not resolve. The file is written at
+  the moment someone is deciding what their host may expose, and a policy
+  that silently covered only the ports that became rows would read as
+  though it covered the host.
 - A rewrite whose target is one of this host's own addresses
   (`dnat to <self>:80`) is followed into the input hook like any other
   rewrite, and the row does not check whether anything listens on the

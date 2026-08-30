@@ -325,7 +325,10 @@ so adopting it is one command and an edit. It prints to stdout, takes
 because a policy carries edits that a facts document does not. It never
 seeds a port whyopen could not resolve into the allow list, and names
 those in a comment instead: an allow list is for ports you decided to
-open, not for ports nobody could account for. The file it generates sets
+open, not for ports nobody could account for. A rewrite whose forwarded
+ports whyopen could not name goes into the same comment block, since no
+entry can cover a rule that names no port and the file should not read as
+though it covered the host. The file it generates sets
 `fail_on_unknown: true`, so on a host with unresolved ports the next
 `check --policy` exits 2. That is deliberate. A guardrail that ignores
 what it cannot see is a false green.
