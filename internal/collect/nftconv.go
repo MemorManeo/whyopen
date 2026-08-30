@@ -241,18 +241,22 @@ func convertXt(kind, name string, rev uint32, info xt.InfoAny) *facts.XtExpr {
 		// docs/decisions/0001-nftables-ruleset-source.md), so ignoring
 		// them evaluated an inverted rule with inverted semantics at full
 		// confidence.
-		x.Decoded = flags&(xtAddrTypeLimitIfaceIn|xtAddrTypeLimitIfaceOut) == 0
+		dst, dstOK := addrTypes(i.Dest)
+		src, srcOK := addrTypes(i.Source)
+		x.Decoded = flags&(xtAddrTypeLimitIfaceIn|xtAddrTypeLimitIfaceOut) == 0 && dstOK && srcOK
 		x.AddrType = &facts.AddrTypeInfo{
-			DestTypes:    addrTypes(i.Dest),
-			SourceTypes:  addrTypes(i.Source),
+			DestTypes:    dst,
+			SourceTypes:  src,
 			InvertDest:   flags&xtAddrTypeInvertDest != 0,
 			InvertSource: flags&xtAddrTypeInvertSource != 0,
 		}
 	case *xt.AddrType:
-		x.Decoded = true
+		dst, dstOK := addrTypes(i.Dest)
+		src, srcOK := addrTypes(i.Source)
+		x.Decoded = dstOK && srcOK
 		x.AddrType = &facts.AddrTypeInfo{
-			DestTypes:    addrTypes(i.Dest),
-			SourceTypes:  addrTypes(i.Source),
+			DestTypes:    dst,
+			SourceTypes:  src,
 			InvertDest:   i.InvertDest,
 			InvertSource: i.InvertSource,
 		}
@@ -406,14 +410,21 @@ func conntrack(matchFlags, invertFlags, stateMask uint16) (*facts.ConntrackInfo,
 	return ct, decoded
 }
 
-func addrTypes(mask uint16) []string {
-	var out []string
+// addrTypes names the type bits in an addrtype mask and reports whether it
+// named all of them. xt_addrtype.h defines more types than whyopen models
+// (BLACKHOLE, UNREACHABLE, PROHIBIT, THROW, NAT, XRESOLVE), and a mask
+// carrying one of those used to be silently reduced to the bits whyopen
+// did recognise and then evaluated at full confidence: the same mistake
+// the invert flags made before decision 0001 caught them.
+func addrTypes(mask uint16) (names []string, complete bool) {
+	var named uint16
 	for _, t := range addrTypeNames {
 		if mask&t.bit != 0 {
-			out = append(out, t.name)
+			names = append(names, t.name)
+			named |= t.bit
 		}
 	}
-	return out
+	return names, named == mask
 }
 
 func payloadBaseName(b expr.PayloadBase) string {

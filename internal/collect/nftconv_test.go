@@ -644,3 +644,40 @@ func TestRedecodeLeavesAnUndecodableExtensionUndecoded(t *testing.T) {
 		t.Fatalf("Redecode improved %d expressions, want 0", n)
 	}
 }
+
+// xt_addrtype.h defines types past the six whyopen names: BLACKHOLE,
+// UNREACHABLE, PROHIBIT, THROW, NAT and XRESOLVE. A mask carrying one of
+// those was silently reduced to the bits whyopen did recognise and then
+// evaluated at full confidence, which is the same mistake the addrtype
+// invert flags made before they were handled.
+func TestConvertAddrTypeRefusesAnUnnamedBit(t *testing.T) {
+	const blackhole = 0x40
+	got := ConvertExprs([]expr.Any{
+		&expr.Match{Name: "addrtype", Rev: 1, Info: &xt.AddrTypeV1{Dest: 0x4 | blackhole}},
+	})
+	if got[0].Xt.Decoded {
+		t.Fatalf("addrtype decoded = true for a mask with an unnamed bit: %+v", got[0].Xt.AddrType)
+	}
+}
+
+func TestConvertAddrTypeRefusesAnUnnamedSourceBit(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Match{Name: "addrtype", Rev: 0, Info: &xt.AddrType{Source: 0x400}}, // NAT
+	})
+	if got[0].Xt.Decoded {
+		t.Fatalf("addrtype decoded = true for a source mask with an unnamed bit")
+	}
+}
+
+// The ordinary case, the one every Docker host emits, must still decode.
+func TestConvertAddrTypeStillDecodesLocal(t *testing.T) {
+	got := ConvertExprs([]expr.Any{
+		&expr.Match{Name: "addrtype", Rev: 1, Info: &xt.AddrTypeV1{Dest: 0x4}},
+	})
+	if !got[0].Xt.Decoded {
+		t.Fatalf("addrtype dst-type LOCAL no longer decodes")
+	}
+	if len(got[0].Xt.AddrType.DestTypes) != 1 || got[0].Xt.AddrType.DestTypes[0] != "local" {
+		t.Errorf("dest types = %v, want [local]", got[0].Xt.AddrType.DestTypes)
+	}
+}
