@@ -325,6 +325,14 @@ func loadFacts(path string) (facts.Facts, int) {
 			f.SchemaVersion, facts.SchemaVersion)
 		return f, exitError
 	}
+	// Only documents from outside this process are validated. One whyopen
+	// just collected is structurally sound by construction, and refusing
+	// to run against a live host over a collector bug would be a worse
+	// failure than the one this prevents.
+	if err := facts.Validate(f); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", path, err)
+		return f, exitError
+	}
 	return f, exitOK
 }
 

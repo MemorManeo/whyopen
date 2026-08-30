@@ -130,3 +130,44 @@ func TestResolveVersionWithoutBuildInfo(t *testing.T) {
 		t.Fatalf("resolveVersion = %+v, want the defaults %+v unchanged", got, defaultVersionInfo())
 	}
 }
+
+// A facts document is something whyopen tells people to attach to bug
+// reports, so it reaches the evaluator exactly as it was written. One
+// naming an expression kind without the object that kind promises used to
+// panic in both output modes, in match.go and in RenderRule respectively.
+// It has to be a refusal that names the rule instead.
+func TestCheckRefusesAStructurallyBrokenFactsDocument(t *testing.T) {
+	f := facts.Facts{
+		SchemaVersion: facts.SchemaVersion,
+		// A global address, or the verdict short-circuits before any rule
+		// is walked and the broken expression is never reached.
+		Host: facts.Host{Interfaces: []facts.Interface{{
+			Name: "eth0", Index: 2, Up: true,
+			Addresses: []facts.Addr{{IP: "203.0.113.10", Prefix: 24, Family: "ip", Scope: "global"}},
+		}}},
+		Ruleset: facts.Ruleset{Tables: []facts.Table{{
+			Family: "ip", Name: "filter", Chains: []facts.Chain{{
+				Name: "INPUT", Base: true, Hook: "input", Policy: "accept",
+				Rules: []facts.Rule{{Handle: 42, Exprs: []facts.Expr{{Kind: facts.ExprCmp}}}},
+			}},
+		}}},
+		Sockets: []facts.Socket{
+			{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 22, Unit: "ssh.service"},
+		},
+	}
+	b, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "facts.json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := runCheck([]string{"-facts", path}); got != exitError {
+		t.Fatalf("check exit = %d, want %d (exitError)", got, exitError)
+	}
+	if got := runCheck([]string{"-facts", path, "-explain", "22"}); got != exitError {
+		t.Fatalf("check --explain exit = %d, want %d (exitError)", got, exitError)
+	}
+}
