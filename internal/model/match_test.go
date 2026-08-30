@@ -310,7 +310,10 @@ func TestUnresolvableMatchInAVerdictlessRuleIsSkipped(t *testing.T) {
 	}}
 	p := testPacket()
 	p.DstPort = 22
-	if out, act := MatchRule(p, rule, nil); out != OutcomeNoMatch || act.Kind != "none" {
+	// OutcomeSkipped rather than OutcomeNoMatch: it steers traversal the
+	// same way, and says the rule was stepped over rather than that the
+	// packet failed to match it, so the path can still show it.
+	if out, act := MatchRule(p, rule, nil); out != OutcomeSkipped || act.Kind != "none" {
 		t.Fatalf("out=%v act=%+v, want the rule skipped: it has no verdict to apply", out, act)
 	}
 }

@@ -56,8 +56,13 @@ func Explain(w io.Writer, v model.Verdict) {
 		return
 	}
 	for i, h := range v.Path {
-		fmt.Fprintf(w, "  %2d. %s %s/%s (hook %s, priority %d, handle %d)\n      %s\n",
-			i+1, h.Family, h.Table, h.Chain, h.Hook, h.Priority, h.Handle, RenderRule(h.Rule))
+		note := ""
+		if h.Action == "skipped" {
+			// Without this the rule reads as though it decided something.
+			note = ", skipped: it carries no verdict, so neither outcome of its unresolved match changes the path"
+		}
+		fmt.Fprintf(w, "  %2d. %s %s/%s (hook %s, priority %d, handle %d%s)\n      %s\n",
+			i+1, h.Family, h.Table, h.Chain, h.Hook, h.Priority, h.Handle, note, RenderRule(h.Rule))
 	}
 }
 

@@ -176,6 +176,13 @@ func (w *walker) unwind(table string, ch facts.Chain) Result {
 	return basePolicyResult(ch, "a goto fell through to the drop policy of "+table+"/"+ch.Name)
 }
 
+func (w *walker) record(table string, ch facts.Chain, r facts.Rule, action string) {
+	w.hits = append(w.hits, Hit{
+		Family: w.family, Table: table, Chain: ch.Name, Hook: ch.Hook,
+		Priority: ch.Priority, Handle: r.Handle, Action: action, Rule: r,
+	})
+}
+
 // walkChain returns accept, drop or unknown, "none" for a regular chain that
 // fell through without a verdict, or "unwind" for a goto that fell through,
 // which must not resume in any caller and is resolved at the base chain.
@@ -190,10 +197,14 @@ func (w *walker) walkChain(table string, ch facts.Chain, depth int) Result {
 		if out == OutcomeNoMatch {
 			continue
 		}
-		w.hits = append(w.hits, Hit{
-			Family: w.family, Table: table, Chain: ch.Name, Hook: ch.Hook,
-			Priority: ch.Priority, Handle: r.Handle, Action: act.Kind, Rule: r,
-		})
+		if out == OutcomeSkipped {
+			// Recorded, then stepped over: the rule decides nothing, but
+			// it is a rule the packet reached and the one a reader
+			// chasing an unresolved expression will go looking for.
+			w.record(table, ch, r, "skipped")
+			continue
+		}
+		w.record(table, ch, r, act.Kind)
 		if out == OutcomeUnknown {
 			return Result{Kind: "unknown", Reason: "rule " + itoa64(r.Handle) + " in " + table + "/" + ch.Name + " uses an expression whyopen cannot resolve"}
 		}

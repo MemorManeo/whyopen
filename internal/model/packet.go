@@ -46,6 +46,13 @@ const (
 	OutcomeMatch Outcome = iota
 	OutcomeNoMatch
 	OutcomeUnknown
+	// OutcomeSkipped is a rule carrying an expression whyopen cannot
+	// resolve, in a rule with no verdict, so neither outcome of the match
+	// changes where the packet goes. It steers traversal exactly like
+	// OutcomeNoMatch and exists only so the rule can still be recorded in
+	// the path: a reader chasing an unresolved expression should see the
+	// rule that carried it, not a gap where it was.
+	OutcomeSkipped
 )
 
 func (o Outcome) String() string {
@@ -54,6 +61,8 @@ func (o Outcome) String() string {
 		return "match"
 	case OutcomeNoMatch:
 		return "no-match"
+	case OutcomeSkipped:
+		return "skipped"
 	}
 	return "unknown"
 }

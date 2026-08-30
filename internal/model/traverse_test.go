@@ -365,3 +365,39 @@ func TestBaseChainOnAnUnrecognisedHookIsNotSilentlySkipped(t *testing.T) {
 		t.Fatalf("result = %+v, want an explained unknown rather than a walk that omits the chain", res)
 	}
 }
+
+// A rule skipped as harmless is still a rule the packet reached. Leaving
+// it out of the path put a gap in --explain at exactly the rule a reader
+// chasing an unresolved expression is most likely to be looking for: the
+// one UFW's rate limiter emits.
+func TestSkippedRuleIsRecordedInThePath(t *testing.T) {
+	verdictless := facts.Rule{Handle: 19, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "transport", Offset: 2, Len: 2}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: "0016"}},
+		{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent"}},
+		{Kind: facts.ExprOther, Note: "counter"},
+	}}
+	accept := facts.Rule{Handle: 20, Exprs: []facts.Expr{
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+	rs := facts.Ruleset{Tables: []facts.Table{{Family: "ip", Name: "filter", Chains: []facts.Chain{{
+		Name: "INPUT", Base: true, Hook: "input", Policy: "drop",
+		Rules: []facts.Rule{verdictless, accept},
+	}}}}}
+
+	pkt := testPacket()
+	pkt.DstPort = 22
+	res, hits := Traverse(rs, "ip", "input", pkt)
+	if res.Kind != "accept" {
+		t.Fatalf("result = %+v, want accept: the skipped rule decides nothing", res)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("hits = %d, want both rules: the skipped one and the accept", len(hits))
+	}
+	if hits[0].Handle != 19 || hits[0].Action != "skipped" {
+		t.Errorf("hits[0] = %+v, want handle 19 marked skipped", hits[0])
+	}
+	if hits[1].Handle != 20 || hits[1].Action != "accept" {
+		t.Errorf("hits[1] = %+v, want the accept", hits[1])
+	}
+}

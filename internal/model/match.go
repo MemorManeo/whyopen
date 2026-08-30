@@ -109,7 +109,7 @@ func MatchRule(pkt *Packet, r facts.Rule, sets []facts.Set) (Outcome, Action) {
 			out, a, ok := xtExpr(pkt, e.Xt)
 			if !ok {
 				if skippableUnresolvedMatch(pkt, r, i) {
-					return OutcomeNoMatch, act
+					return OutcomeSkipped, act
 				}
 				return OutcomeUnknown, act
 			}

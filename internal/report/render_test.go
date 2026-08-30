@@ -190,3 +190,28 @@ func TestRenderRuleShowsIPv6AddressesAsAddresses(t *testing.T) {
 		t.Fatalf("RenderRule = %q, want the IPv6 address rendered as an address", got)
 	}
 }
+
+// A skipped rule printed like any other hit would read as though it
+// decided something. --explain has to say why it did not.
+func TestExplainMarksASkippedRule(t *testing.T) {
+	var sb strings.Builder
+	Explain(&sb, model.Verdict{
+		Endpoint: model.Endpoint{Port: 22, Proto: "tcp"}, Family: "ip", Result: "reachable",
+		Path: []model.Hit{
+			{Family: "ip", Table: "filter", Chain: "INPUT", Handle: 19, Action: "skipped",
+				Rule: facts.Rule{Handle: 19, Exprs: []facts.Expr{{Kind: facts.ExprXt, Xt: &facts.XtExpr{Kind: "match", Name: "recent"}}}}},
+			{Family: "ip", Table: "filter", Chain: "INPUT", Handle: 20, Action: "accept",
+				Rule: facts.Rule{Handle: 20, Exprs: []facts.Expr{{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}}}}},
+		},
+	})
+	out := sb.String()
+	if !strings.Contains(out, "skipped") {
+		t.Fatalf("--explain does not mark the skipped rule:\n%s", out)
+	}
+	line := strings.Split(out, "\n")
+	for _, l := range line {
+		if strings.Contains(l, "handle 20") && strings.Contains(l, "skipped") {
+			t.Errorf("the deciding rule is marked skipped:\n%s", out)
+		}
+	}
+}
