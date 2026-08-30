@@ -69,7 +69,10 @@ Known gaps that produce `unknown` today:
 - Native nftables expressions whyopen has no decoder for. UFW and Docker
   reach the kernel through iptables-nft, so their rules arrive as
   compatibility expressions; a hand-written nft ruleset or a firewalld
-  host uses native ones instead, and only some of those decode. `ct state`
+  host uses native ones instead, and only some of those decode. Both are
+  exercised against a real kernel: CI runs a real firewalld, and a chain
+  of the rules hardening guides tell people to write, asserting the
+  verdicts rather than only that the expressions parsed. `ct state`
   and set lookups do, in every shape a captured firewalld-style ruleset
   produced: `ct state established,related accept` and `ct state
   { established, related } accept` compile to two different netlink shapes
