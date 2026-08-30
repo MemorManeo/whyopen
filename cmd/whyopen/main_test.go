@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"testing"
 
 	"github.com/MemorManeo/whyopen/internal/facts"
@@ -64,5 +65,68 @@ func TestCheckExitsOKWhenRulesetReadable(t *testing.T) {
 	}
 	if got := runCheck([]string{"-facts", path, "-explain", "22"}); got != exitOK {
 		t.Fatalf("check --explain exit = %d, want %d (exitOK) for a readable ruleset", got, exitOK)
+	}
+}
+
+// A release binary carries -X values from the linker, and those are the
+// most precise thing available: the build information the go command
+// embeds must never override them.
+func TestResolveVersionPrefersLinkerValues(t *testing.T) {
+	info := &debug.BuildInfo{
+		Main: debug.Module{Version: "v9.9.9"},
+		Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "0000000000000000000000000000000000000000"},
+			{Key: "vcs.time", Value: "2000-01-01T00:00:00Z"},
+		},
+	}
+	got := resolveVersion(versionInfo{Version: "v0.2.0", Commit: "abc1234", Date: "2026-08-30T09:00:00Z"}, info, true)
+	want := versionInfo{Version: "v0.2.0", Commit: "abc1234", Date: "2026-08-30T09:00:00Z"}
+	if got != want {
+		t.Fatalf("resolveVersion = %+v, want the linker's own values %+v", got, want)
+	}
+}
+
+// `go install module@version` injects nothing, but the go command records
+// the module version it installed. Reporting "dev" for it, as whyopen did
+// through v0.1.0, understates what the binary knows about itself.
+func TestResolveVersionFallsBackToModuleVersion(t *testing.T) {
+	info := &debug.BuildInfo{Main: debug.Module{Version: "v0.2.0"}}
+	got := resolveVersion(defaultVersionInfo(), info, true)
+	if got.Version != "v0.2.0" {
+		t.Fatalf("resolveVersion version = %q, want %q from the embedded module version", got.Version, "v0.2.0")
+	}
+}
+
+// A plain `go build` in a checkout records "(devel)" as the module
+// version, which names nothing: the VCS stamp is the only real identity
+// such a binary has, so commit and date come from there and the version
+// stays at its honest default.
+func TestResolveVersionUsesVCSStampForADevelBuild(t *testing.T) {
+	info := &debug.BuildInfo{
+		Main: debug.Module{Version: "(devel)"},
+		Settings: []debug.BuildSetting{
+			{Key: "vcs", Value: "git"},
+			{Key: "vcs.revision", Value: "b9d7dd5859fe68e8a56ed51cf1e8e1717f89343c"},
+			{Key: "vcs.time", Value: "2026-08-29T16:03:00Z"},
+		},
+	}
+	got := resolveVersion(defaultVersionInfo(), info, true)
+	want := versionInfo{
+		Version: "dev",
+		Commit:  "b9d7dd5859fe68e8a56ed51cf1e8e1717f89343c",
+		Date:    "2026-08-29T16:03:00Z",
+	}
+	if got != want {
+		t.Fatalf("resolveVersion = %+v, want %+v", got, want)
+	}
+}
+
+// No build information at all (a binary stripped of it, or a test binary
+// on a toolchain that records none) leaves every default in place rather
+// than inventing a value.
+func TestResolveVersionWithoutBuildInfo(t *testing.T) {
+	got := resolveVersion(defaultVersionInfo(), nil, false)
+	if got != defaultVersionInfo() {
+		t.Fatalf("resolveVersion = %+v, want the defaults %+v unchanged", got, defaultVersionInfo())
 	}
 }

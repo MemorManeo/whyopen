@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"github.com/MemorManeo/whyopen/internal/collect"
 	"github.com/MemorManeo/whyopen/internal/facts"
@@ -31,12 +32,63 @@ const (
 	exitError = 3
 )
 
-// Set by the linker at release time; the defaults are what a local build reports.
-var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
+// The values a build reports when the linker injected nothing. Named
+// because resolveVersion recognises them as "not set" and fills them in.
+const (
+	defaultVersion = "dev"
+	defaultCommit  = "none"
+	defaultDate    = "unknown"
 )
+
+// Set by the linker at release time.
+var (
+	version = defaultVersion
+	commit  = defaultCommit
+	date    = defaultDate
+)
+
+// versionInfo is the triple `whyopen version` prints.
+type versionInfo struct {
+	Version string
+	Commit  string
+	Date    string
+}
+
+// defaultVersionInfo returns what the linker injected, or the defaults
+// above where it injected nothing.
+func defaultVersionInfo() versionInfo {
+	return versionInfo{Version: version, Commit: commit, Date: date}
+}
+
+// resolveVersion fills in what the linker did not. A binary from
+// `go install module@version` carries no -X values at all and would
+// otherwise call itself "dev", but the go command embeds the module
+// version it installed, and for a build from a checkout the VCS revision
+// and commit time as well. Whatever the linker did inject wins: a release
+// build is told its own tag, which is more precise than either.
+func resolveVersion(v versionInfo, info *debug.BuildInfo, ok bool) versionInfo {
+	if !ok || info == nil {
+		return v
+	}
+	// "(devel)" is what a build from a checkout records, and it names no
+	// version at all, so it is no better than the default it would replace.
+	if v.Version == defaultVersion && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		v.Version = info.Main.Version
+	}
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			if v.Commit == defaultCommit {
+				v.Commit = s.Value
+			}
+		case "vcs.time":
+			if v.Date == defaultDate {
+				v.Date = s.Value
+			}
+		}
+	}
+	return v
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -60,7 +112,9 @@ func main() {
 }
 
 func runVersion() int {
-	fmt.Printf("whyopen %s (commit %s, built %s)\n", version, commit, date)
+	info, ok := debug.ReadBuildInfo()
+	v := resolveVersion(defaultVersionInfo(), info, ok)
+	fmt.Printf("whyopen %s (commit %s, built %s)\n", v.Version, v.Commit, v.Date)
 	return exitOK
 }
 
