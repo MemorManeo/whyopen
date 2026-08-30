@@ -1338,3 +1338,76 @@ func TestBitwiseWithAMismatchedXorStillRefuses(t *testing.T) {
 		t.Fatalf("out = %v, want unknown", out)
 	}
 }
+
+// nft compiles a byte-aligned prefix into a load of just those bytes:
+// `ip saddr 10.0.0.0/8` becomes a one-byte compare of the first octet,
+// not a four-byte load with a mask. whyopen handled only the whole
+// address, so every /8, /16 and /24 match, which is to say most prefix
+// matches anyone writes, left the verdict unknown.
+func addrWindowRule(offset, length uint32, data string) facts.Rule {
+	return facts.Rule{Handle: 111, Exprs: []facts.Expr{
+		{Kind: facts.ExprPayload, Payload: &facts.PayloadExpr{DestRegister: 1, Base: "network", Offset: offset, Len: length}},
+		{Kind: facts.ExprCmp, Cmp: &facts.CmpExpr{Op: "eq", Register: 1, Data: data}},
+		{Kind: facts.ExprVerdict, Verdict: &facts.VerdictExpr{Kind: "accept"}},
+	}}
+}
+
+func TestPayloadReadsAPrefixOfTheAddress(t *testing.T) {
+	// testPacket's source is 198.51.100.7 = c6 33 64 07, destination
+	// 203.0.113.10 = cb 00 71 0a.
+	cases := []struct {
+		name           string
+		offset, length uint32
+		data           string
+		want           Outcome
+	}{
+		{"saddr /8 hit", 12, 1, "c6", OutcomeMatch},
+		{"saddr /8 miss", 12, 1, "0a", OutcomeNoMatch},
+		{"saddr /16", 12, 2, "c633", OutcomeMatch},
+		{"saddr /24", 12, 3, "c63364", OutcomeMatch},
+		{"saddr /32", 12, 4, "c6336407", OutcomeMatch},
+		{"daddr /8", 16, 1, "cb", OutcomeMatch},
+		{"daddr /24 miss", 16, 3, "0a0000", OutcomeNoMatch},
+	}
+	for _, c := range cases {
+		out, _ := MatchRule(testPacket(), addrWindowRule(c.offset, c.length, c.data), nil)
+		if out != c.want {
+			t.Errorf("%s: out = %v, want %v", c.name, out, c.want)
+		}
+	}
+}
+
+// A window that runs off the end of the field it started in is not a
+// prefix of anything, and neither is one over a header field whyopen does
+// not model.
+func TestPayloadRefusesAWindowItCannotPlace(t *testing.T) {
+	for _, c := range []struct{ offset, length uint32 }{
+		{14, 4}, // starts inside saddr and runs into daddr
+		{0, 4},  // version, tos and total length
+		{19, 4}, // runs off the end of the header whyopen models
+	} {
+		out, _ := MatchRule(testPacket(), addrWindowRule(c.offset, c.length, "00000000"), nil)
+		if out != OutcomeUnknown {
+			t.Errorf("network@%d,%d: out = %v, want unknown", c.offset, c.length, out)
+		}
+	}
+}
+
+func TestPayloadReadsAPrefixOfAnIPv6Address(t *testing.T) {
+	p := testPacket()
+	p.Family = "ip6"
+	p.Src = netip.MustParseAddr("2001:db8:ffff::7")
+	p.Dst = netip.MustParseAddr("2001:db8::10")
+
+	// The first four bytes of the source: 2001:0db8.
+	if out, _ := MatchRule(p, addrWindowRule(8, 4, "20010db8"), nil); out != OutcomeMatch {
+		t.Error("an IPv6 source prefix did not match")
+	}
+	// And of the destination, at its own offset.
+	if out, _ := MatchRule(p, addrWindowRule(24, 4, "20010db8"), nil); out != OutcomeMatch {
+		t.Error("an IPv6 destination prefix did not match")
+	}
+	if out, _ := MatchRule(p, addrWindowRule(8, 4, "fe800000"), nil); out != OutcomeNoMatch {
+		t.Error("a prefix that does not cover the source matched anyway")
+	}
+}

@@ -251,26 +251,27 @@ func skippableUnresolvedMatch(pkt *Packet, r facts.Rule, idx int) bool {
 func payloadBytes(pkt *Packet, p *facts.PayloadExpr) ([]byte, bool) {
 	switch p.Base {
 	case "network":
+		// A prefix match does not have to load the whole address. nft
+		// compiles a byte-aligned one into a load of just those bytes, so
+		// `ip saddr 10.0.0.0/8` reads one byte at offset 12 rather than
+		// four with a mask, and handling only the whole address left
+		// every /8, /16 and /24 match unresolvable.
 		if pkt.Family == "ip" {
-			switch {
-			case p.Offset == 9 && p.Len == 1:
+			if p.Offset == 9 && p.Len == 1 {
 				return []byte{protoNumber(pkt.Proto)}, true
-			case p.Offset == 12 && p.Len == 4:
-				return addrBytes(pkt.Src, 4)
-			case p.Offset == 16 && p.Len == 4:
-				return addrBytes(pkt.Dst, 4)
 			}
-			return nil, false
+			if b, ok := addrWindow(pkt.Src, 4, 12, p); ok {
+				return b, true
+			}
+			return addrWindow(pkt.Dst, 4, 16, p)
 		}
-		switch {
-		case p.Offset == 6 && p.Len == 1:
+		if p.Offset == 6 && p.Len == 1 {
 			return []byte{protoNumber(pkt.Proto)}, true
-		case p.Offset == 8 && p.Len == 16:
-			return addrBytes(pkt.Src, 16)
-		case p.Offset == 24 && p.Len == 16:
-			return addrBytes(pkt.Dst, 16)
 		}
-		return nil, false
+		if b, ok := addrWindow(pkt.Src, 16, 8, p); ok {
+			return b, true
+		}
+		return addrWindow(pkt.Dst, 16, 24, p)
 
 	case "transport":
 		switch {
@@ -282,6 +283,25 @@ func payloadBytes(pkt *Packet, p *facts.PayloadExpr) ([]byte, bool) {
 		return nil, false
 	}
 	return nil, false
+}
+
+// addrWindow returns the slice of an address a payload load asks for,
+// when the load falls entirely inside that address field. A load that
+// starts in one field and runs into the next is not a prefix of either,
+// and is refused rather than answered from whichever it started in.
+func addrWindow(a netip.Addr, size int, fieldOffset uint32, p *facts.PayloadExpr) ([]byte, bool) {
+	if p.Len == 0 || p.Offset < fieldOffset {
+		return nil, false
+	}
+	start := p.Offset - fieldOffset
+	if int(start)+int(p.Len) > size {
+		return nil, false
+	}
+	b, ok := addrBytes(a, size)
+	if !ok {
+		return nil, false
+	}
+	return b[start : int(start)+int(p.Len)], true
 }
 
 func addrBytes(a netip.Addr, want int) ([]byte, bool) {
