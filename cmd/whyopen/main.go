@@ -394,9 +394,8 @@ func loadFacts(path string) (facts.Facts, int) {
 		fmt.Fprintf(os.Stderr, "parse %s: %v\n", path, err)
 		return f, exitError
 	}
-	if f.SchemaVersion != facts.SchemaVersion {
-		fmt.Fprintf(os.Stderr, "facts schema version %d, this build understands %d\n",
-			f.SchemaVersion, facts.SchemaVersion)
+	if err := facts.SupportedSchema(f.SchemaVersion); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", path, err)
 		return f, exitError
 	}
 	// Only documents from outside this process are validated. One whyopen

@@ -3,11 +3,45 @@
 // host-specific) and evaluation (pure). It imports nothing but the stdlib.
 package facts
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
-// SchemaVersion is bumped on any breaking change to these types. Readers
-// must refuse a document whose version they do not know.
+// SchemaVersion is the version of the facts document this build writes.
+//
+// It is bumped only for a change that a reader needs new code to survive:
+// a field removed or renamed, a field whose meaning or units change, or a
+// field whose absence starts to mean something different. Adding an
+// optional field is not such a change, which is why this has stayed at 1
+// through every field added since: an older reader ignores what it does
+// not know, and a newer one reads absence as "the collecting build did
+// not record this", never as a fact about the host.
+//
+// The rule that makes a bump safe is that the code to read the older
+// document has to exist before the bump lands, not after. See
+// SupportedSchema and docs/decisions/0010-facts-schema-versioning.md.
 const SchemaVersion = 1
+
+// SupportedSchema reports whether this build can read a document written
+// at version v, and says why not when it cannot.
+//
+// Older is readable, newer is not. A build that refused the documents its
+// own predecessors wrote would break the promise the preserved payloads
+// exist to keep, that a snapshot can be collected once and evaluated
+// later by a better build. A document from a later build is the one case
+// where refusing is right: this build cannot know what changed in it, and
+// reading it on the assumption that nothing important did is how a tool
+// reports a confident wrong answer.
+func SupportedSchema(v int) error {
+	if v < 1 {
+		return fmt.Errorf("no usable schema_version (%d), so this is not a facts document whyopen wrote", v)
+	}
+	if v > SchemaVersion {
+		return fmt.Errorf("facts schema version %d is newer than the %d this build reads; upgrade whyopen", v, SchemaVersion)
+	}
+	return nil
+}
 
 type Facts struct {
 	SchemaVersion int       `json:"schema_version"`

@@ -69,3 +69,40 @@ func TestValidateAcceptsTheGoldenFixture(t *testing.T) {
 		t.Fatalf("Validate rejected a document whyopen collected: %v", err)
 	}
 }
+
+// Every version this build ever wrote must stay readable by it. A build
+// that refuses the documents its own predecessors wrote breaks the one
+// promise the raw payloads exist to keep: collect once, evaluate later.
+func TestSupportedSchemaAcceptsEveryVersionUpToThisOne(t *testing.T) {
+	for v := 1; v <= SchemaVersion; v++ {
+		if err := SupportedSchema(v); err != nil {
+			t.Errorf("SupportedSchema(%d) = %v, want nil", v, err)
+		}
+	}
+}
+
+// A newer document is the one case where refusing is right: this build
+// cannot know what changed in it, and reading it on the assumption that
+// nothing important did is how a tool reports a confident wrong answer.
+func TestSupportedSchemaRefusesANewerDocument(t *testing.T) {
+	err := SupportedSchema(SchemaVersion + 1)
+	if err == nil {
+		t.Fatal("SupportedSchema accepted a document from a later build")
+	}
+	if !strings.Contains(err.Error(), "upgrade") {
+		t.Errorf("error = %q, want it to say what to do about it", err)
+	}
+}
+
+// No version at all is not an old document, it is not a facts document.
+func TestSupportedSchemaRefusesAVersionlessDocument(t *testing.T) {
+	for _, v := range []int{0, -1} {
+		err := SupportedSchema(v)
+		if err == nil {
+			t.Fatalf("SupportedSchema(%d) accepted a document with no usable version", v)
+		}
+		if !strings.Contains(err.Error(), "schema_version") {
+			t.Errorf("error = %q, want it to name the field that is missing", err)
+		}
+	}
+}
