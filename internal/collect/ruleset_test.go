@@ -414,3 +414,53 @@ func TestLegacyBackendDoesNotClaimRulesItCannotSee(t *testing.T) {
 		}
 	}
 }
+
+// A netdev table carries the ingress hook, which runs before prerouting
+// and can drop a packet before any rule whyopen walks. It was skipped
+// here as a family that "cannot carry inbound IP verdicts", which is
+// exactly backwards: an ingress chain decides whether the packet exists
+// at all for everything downstream. The integration suite caught this
+// after the evaluator had already been taught to handle such a chain, so
+// the fix was reachable only from a document that carried one.
+func TestReadRulesetKeepsNetdevTables(t *testing.T) {
+	dropPolicy := nftables.ChainPolicyDrop
+	guard := &nftables.Table{Family: nftables.TableFamilyNetdev, Name: "guard"}
+	f := &fakeNFT{
+		tables: []*nftables.Table{guard},
+		chains: map[nftables.TableFamily][]*nftables.Chain{
+			nftables.TableFamilyNetdev: {{
+				Name: "ingress-guard", Table: guard, Device: "eth0",
+				Hooknum: nftables.ChainHookIngress, Policy: &dropPolicy,
+			}},
+		},
+	}
+
+	rs, _, err := readRuleset(f)
+	if err != nil {
+		t.Fatalf("readRuleset: %v", err)
+	}
+	if len(rs.Tables) != 1 {
+		t.Fatalf("tables = %+v, want the netdev table kept", rs.Tables)
+	}
+	ch := rs.Tables[0].Chains[0]
+	if ch.Hook != "ingress" || ch.Device != "eth0" {
+		t.Fatalf("chain = %+v, want the ingress hook on eth0", ch)
+	}
+}
+
+// arp and bridge stay out: neither can decide whether an inbound IP
+// packet reaches a socket on this host, and carrying them would grow
+// every facts document for nothing.
+func TestReadRulesetStillSkipsArpAndBridge(t *testing.T) {
+	arp := &nftables.Table{Family: nftables.TableFamilyARP, Name: "arpfilter"}
+	br := &nftables.Table{Family: nftables.TableFamilyBridge, Name: "brfilter"}
+	f := &fakeNFT{tables: []*nftables.Table{arp, br}}
+
+	rs, _, err := readRuleset(f)
+	if err != nil {
+		t.Fatalf("readRuleset: %v", err)
+	}
+	if len(rs.Tables) != 0 {
+		t.Fatalf("tables = %+v, want none", rs.Tables)
+	}
+}

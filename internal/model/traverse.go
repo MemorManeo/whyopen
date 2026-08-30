@@ -40,6 +40,12 @@ type Hit struct {
 // which is what keeps one ingress chain from making every port on the host
 // unknown. A chain naming no device is treated as seeing everything.
 //
+// Today a chain collected from a live kernel never names one: the nftables
+// library drops NFTA_HOOK_DEV when it reads a chain back, so Device is
+// empty and any ingress chain does make every verdict on the host unknown.
+// That is the safe direction, and it is the narrow branch below that is
+// waiting on the collector, not this rule.
+//
 // The egress hook is deliberately not treated this way. It acts on the
 // reply, and this model is about whether the inbound packet reaches the
 // socket, the same reason the output hook is never walked.

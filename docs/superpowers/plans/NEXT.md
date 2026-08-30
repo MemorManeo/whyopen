@@ -235,6 +235,16 @@ rushed into that tag; all three were closed before v0.2.0:
 
 ## Smaller items, roughly in value order
 
+- Read `NFTA_HOOK_DEV` so an ingress chain only affects its own device.
+  The evaluator already narrows by device and the facts schema already
+  carries it, but a chain read from a live kernel never has one: the
+  nftables library's `hookFromMsg` keeps the hook number and the priority
+  and drops the rest, so `Chain.Device` is always empty. One ingress
+  chain therefore makes every port on the host unknown, which is safe and
+  blunt. Closing it means reading the attribute outside the library's
+  chain API, which is a wider read surface than decisions 0001 and 0005
+  allow, so it needs its own record first.
+
 - Validate `--facts` input at the boundary; a hand-crafted document can
   currently reach a nil dereference.
 - Mark an `addrtype` match undecoded when its mask carries a bit whyopen has

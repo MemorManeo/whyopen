@@ -75,8 +75,15 @@ func readRuleset(c rulesetSource) (facts.Ruleset, []facts.Warning, error) {
 	var rs facts.Ruleset
 	for _, t := range tables {
 		fam := FamilyName(t.Family)
-		if fam != "ip" && fam != "ip6" && fam != "inet" {
-			continue // arp, bridge and netdev cannot carry inbound IP verdicts
+		// netdev is here for the ingress hook, which runs before
+		// prerouting and can drop a packet before any rule the evaluator
+		// walks. It was skipped as a family that cannot carry inbound IP
+		// verdicts, which is exactly backwards: an ingress chain decides
+		// whether the packet exists at all for everything downstream.
+		// arp and bridge stay out, neither can decide whether an inbound
+		// IP packet reaches a socket on this host.
+		if fam != "ip" && fam != "ip6" && fam != "inet" && fam != "netdev" {
+			continue
 		}
 		ft := facts.Table{Family: fam, Name: t.Name}
 

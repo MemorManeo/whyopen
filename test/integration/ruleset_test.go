@@ -496,10 +496,19 @@ table netdev guard {
 	}
 }
 
-// The hook is per device, so a chain on another one cannot see this
-// packet. Without this, closing the hole above would have made every port
-// on any host with an ingress chain anywhere report unknown.
-func TestIngressChainOnAnotherDeviceLeavesTheVerdictAlone(t *testing.T) {
+// The hook is per device, so a chain on lo cannot see a packet arriving on
+// the veth, and whyopen should leave that verdict alone. It does not, and
+// this pins down why rather than leaving it to be rediscovered: the
+// nftables library never reads NFTA_HOOK_DEV back (hookFromMsg keeps the
+// hook number and the priority and drops the rest), so a chain collected
+// from a live kernel carries no device at all, and whyopen refuses for
+// every packet rather than guess which ones the chain can see.
+//
+// The evaluator does narrow by device when the document carries one, which
+// the unit tests cover. The day the collector can read the attribute, this
+// expectation flips to reachable, and that is the point of writing it down
+// as a test instead of a comment.
+func TestIngressChainOnAnotherDeviceIsStillUnknownToday(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "nft", "python3")
 
@@ -523,8 +532,11 @@ table netdev guard {
 	if v == nil {
 		t.Fatal("no verdict for port 22")
 	}
-	if v.Result != "reachable" {
-		t.Fatalf("port 22 = %s (%s), want reachable: the ingress chain is on lo, not on the "+
-			"device the packet arrives on", v.Result, v.Reason)
+	if v.Result != "unknown" {
+		t.Fatalf("port 22 = %s (%s), want unknown: the chain is on lo, but a live read cannot "+
+			"tell which device it is on, so whyopen refuses rather than guessing", v.Result, v.Reason)
+	}
+	if !strings.Contains(v.Reason, "every device") {
+		t.Errorf("reason = %q, want it to say the chain is treated as seeing every device", v.Reason)
 	}
 }
