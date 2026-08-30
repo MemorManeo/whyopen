@@ -2,6 +2,8 @@ module github.com/MemorManeo/whyopen
 
 go 1.24
 
+toolchain go1.24.0
+
 require (
 	github.com/google/nftables v0.3.0
 	golang.org/x/sys v0.28.0
