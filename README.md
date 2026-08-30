@@ -75,6 +75,13 @@ Known gaps that produce `unknown` today:
   deliberately, a set whyopen will not read as a flat membership test: a
   map or verdict map, a concatenated key type, or a set whose elements the
   facts document does not carry.
+- A base chain on the **ingress** hook. It runs before prerouting, sees
+  raw frames rather than the IP-level context whyopen evaluates in, and
+  can drop a packet before any rule whyopen walks, so a port whose traffic
+  arrives on that chain's device reports `unknown`. The hook is per
+  device, so ports arriving on other interfaces are unaffected. The
+  egress hook is not treated this way: it acts on the reply, which this
+  model does not follow, the same reason the output hook is never walked.
 - The `xt recent` extension decodes only the three `check_set` bit
   patterns captured from a live kernel, which is what `ufw limit ssh`
   emits. A `--remove` rule was never captured, so it still reports

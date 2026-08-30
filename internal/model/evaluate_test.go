@@ -626,3 +626,60 @@ func TestDNATNotForwardedWhenOnlyAnotherInterfaceForwards(t *testing.T) {
 		}
 	}
 }
+
+// netdevIngress is `table netdev x { chain y { type filter hook ingress
+// device <dev> priority -500; policy drop; } }`, the shape used to drop
+// traffic before it ever reaches prerouting.
+func netdevIngress(device string) facts.Table {
+	return facts.Table{Family: "netdev", Name: "guard", Chains: []facts.Chain{{
+		Name: "ingress-guard", Base: true, Hook: "ingress", Device: device,
+		Priority: -500, Policy: "drop",
+	}}}
+}
+
+// An ingress chain runs before prerouting and can drop the packet before
+// any rule whyopen walks. Its hook number is NF_NETDEV_INGRESS, which is
+// also NF_INET_PRE_ROUTING, so it was collected as "prerouting" and then
+// skipped as a table of the wrong family: whyopen reported the port
+// reachable while the kernel was dropping every packet on that device.
+func TestIngressChainOnTheArrivalInterfaceIsUnknown(t *testing.T) {
+	f := hostFacts()
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{acceptAllFilter(), netdevIngress("eth0")}}
+	f.Sockets = []facts.Socket{{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 22, Unit: "ssh.service"}}
+
+	vs := Evaluate(f, InternetZone())
+	if len(vs) != 1 {
+		t.Fatalf("got %d verdicts, want 1", len(vs))
+	}
+	if vs[0].Result != "unknown" {
+		t.Fatalf("result = %q (%s), want unknown: an unmodelled ingress chain can drop the packet",
+			vs[0].Result, vs[0].Reason)
+	}
+	for _, want := range []string{"ingress", "eth0", "guard/ingress-guard"} {
+		if !strings.Contains(vs[0].Reason, want) {
+			t.Errorf("reason = %q, want it to name %q", vs[0].Reason, want)
+		}
+	}
+}
+
+// The hook is per device, so a chain on another interface cannot see this
+// packet and must not poison a verdict it has nothing to do with.
+func TestIngressChainOnAnotherInterfaceLeavesTheVerdictAlone(t *testing.T) {
+	f := hostFacts()
+	f.Ruleset = facts.Ruleset{Tables: []facts.Table{acceptAllFilter(), netdevIngress("br-abc")}}
+	f.Sockets = []facts.Socket{{Family: "ip", Proto: "tcp", BindIP: "0.0.0.0", Port: 22, Unit: "ssh.service"}}
+
+	vs := Evaluate(f, InternetZone())
+	if vs[0].Result != "reachable" {
+		t.Fatalf("result = %q (%s), want reachable: the ingress chain is on another device",
+			vs[0].Result, vs[0].Reason)
+	}
+}
+
+// acceptAllFilter is the minimum ruleset that produces a reachable
+// verdict, so the ingress chain is the only thing under test.
+func acceptAllFilter() facts.Table {
+	return facts.Table{Family: "ip", Name: "filter", Chains: []facts.Chain{{
+		Name: "INPUT", Base: true, Hook: "input", Policy: "accept",
+	}}}
+}

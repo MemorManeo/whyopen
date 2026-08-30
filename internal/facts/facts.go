@@ -153,6 +153,11 @@ type Chain struct {
 	// ascending.
 	Hook     string `json:"hook,omitempty"`
 	Priority int32  `json:"priority,omitempty"`
+	// Device is the interface an ingress or egress base chain is attached
+	// to. Those hooks run per device, so it is what says which packets the
+	// chain can see, and a chain naming one whyopen is not evaluating for
+	// cannot affect the verdict.
+	Device string `json:"device,omitempty"`
 	// Policy is accept | drop for a base chain, empty for a regular chain,
 	// or "unknown" when the collector met a policy value it could not name.
 	// Both "unknown" and an unexpected empty value make the chain

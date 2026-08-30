@@ -14,19 +14,47 @@ import (
 
 func TestHookName(t *testing.T) {
 	cases := []struct {
-		hook *nftables.ChainHook
-		want string
+		hook   *nftables.ChainHook
+		family nftables.TableFamily
+		want   string
 	}{
-		{nftables.ChainHookPrerouting, "prerouting"},
-		{nftables.ChainHookInput, "input"},
-		{nftables.ChainHookForward, "forward"},
-		{nftables.ChainHookOutput, "output"},
-		{nftables.ChainHookPostrouting, "postrouting"},
-		{nil, ""},
+		{nftables.ChainHookPrerouting, nftables.TableFamilyIPv4, "prerouting"},
+		{nftables.ChainHookInput, nftables.TableFamilyIPv4, "input"},
+		{nftables.ChainHookForward, nftables.TableFamilyIPv4, "forward"},
+		{nftables.ChainHookOutput, nftables.TableFamilyIPv4, "output"},
+		{nftables.ChainHookPostrouting, nftables.TableFamilyIPv4, "postrouting"},
+		{nil, nftables.TableFamilyIPv4, ""},
 	}
 	for _, c := range cases {
-		if got := HookName(c.hook); got != c.want {
+		if got := HookName(c.hook, c.family); got != c.want {
 			t.Fatalf("HookName = %q, want %q", got, c.want)
+		}
+	}
+}
+
+// The hook numbers overlap between families: NF_NETDEV_INGRESS and
+// NF_INET_PRE_ROUTING are both 0, and NF_NETDEV_EGRESS and NF_INET_LOCAL_IN
+// are both 1. Naming a hook without its family called a netdev ingress
+// chain "prerouting", and the evaluator then skipped it as a table of the
+// wrong family: a chain that can drop every packet arriving on a device
+// was invisible, which is the dangerous direction for an exposure audit.
+func TestHookNameDependsOnTheFamily(t *testing.T) {
+	cases := []struct {
+		hook   *nftables.ChainHook
+		family nftables.TableFamily
+		want   string
+	}{
+		{nftables.ChainHookIngress, nftables.TableFamilyNetdev, "ingress"},
+		{nftables.ChainHookEgress, nftables.TableFamilyNetdev, "egress"},
+		// The same numbers in an IP family are the IP hooks.
+		{nftables.ChainHookIngress, nftables.TableFamilyIPv4, "prerouting"},
+		{nftables.ChainHookEgress, nftables.TableFamilyIPv4, "input"},
+		// inet gained its own ingress hook (NF_INET_INGRESS, 5) in 5.10.
+		{nftables.ChainHookRef(5), nftables.TableFamilyINet, "ingress"},
+	}
+	for _, c := range cases {
+		if got := HookName(c.hook, c.family); got != c.want {
+			t.Errorf("HookName(%d, family %d) = %q, want %q", *c.hook, c.family, got, c.want)
 		}
 	}
 }

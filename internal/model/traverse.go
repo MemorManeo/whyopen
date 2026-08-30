@@ -24,10 +24,57 @@ type Hit struct {
 	Rule     facts.Rule `json:"-"`
 }
 
+// ingressUnmodelled reports whether an ingress base chain could see this
+// packet, in which case no verdict can be drawn.
+//
+// The ingress hook runs before prerouting, on the device its chain is
+// attached to, and whyopen does not model it: it sees raw frames, before
+// the IP-level context this evaluator works in, and a chain there can drop
+// the packet before any rule below is reached. Its hook number is
+// NF_NETDEV_INGRESS, which is also NF_INET_PRE_ROUTING, so such a chain
+// used to be named "prerouting" and then skipped as a table of the wrong
+// family: whyopen reported ports reachable that the kernel was dropping.
+//
+// Only the packets the chain can actually see are affected. The hook is
+// per device, so a chain on another interface leaves this verdict alone,
+// which is what keeps one ingress chain from making every port on the host
+// unknown. A chain naming no device is treated as seeing everything.
+//
+// The egress hook is deliberately not treated this way. It acts on the
+// reply, and this model is about whether the inbound packet reaches the
+// socket, the same reason the output hook is never walked.
+func ingressUnmodelled(rs facts.Ruleset, pkt *Packet) (Result, bool) {
+	for _, t := range rs.Tables {
+		for _, ch := range t.Chains {
+			if !ch.Base || ch.Hook != "ingress" {
+				continue
+			}
+			if ch.Device != "" && pkt.InIface != "" && ch.Device != pkt.InIface {
+				continue
+			}
+			where := "on device " + ch.Device
+			if ch.Device == "" {
+				where = "on every device"
+			}
+			return Result{Kind: "unknown", Reason: "base chain " + t.Name + "/" + ch.Name +
+				" is on the ingress hook (" + where + "), which whyopen does not model: it runs before" +
+				" prerouting and can drop the packet before any rule whyopen walks"}, true
+		}
+	}
+	return Result{}, false
+}
+
 // knownHooks are the five netfilter hooks whyopen can place a base chain on.
 // A base chain named with anything else cannot be assigned to a hook, and a
 // hook walked without it is an incomplete walk.
+// ingress and egress are named here so a chain on one is not reported as
+// an unrecognised hook: ingress is handled by ingressUnmodelled before any
+// walk begins, and egress acts on the reply, which this model does not
+// follow. Both live in the netdev family, whose tables the walk below
+// skips anyway, and inet gained its own ingress hook in kernel 5.10.
 var knownHooks = map[string]bool{
+	"ingress":    true,
+	"egress":     true,
 	"prerouting": true, "input": true, "forward": true,
 	"output": true, "postrouting": true,
 }
@@ -47,6 +94,9 @@ type Result struct {
 // in ascending priority order, and returns the resulting verdict with the
 // ordered list of rules that produced it.
 func Traverse(rs facts.Ruleset, family, hook string, pkt *Packet) (Result, []Hit) {
+	if res, blocked := ingressUnmodelled(rs, pkt); blocked {
+		return res, nil
+	}
 	type baseChain struct {
 		table string
 		chain facts.Chain

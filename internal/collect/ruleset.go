@@ -103,7 +103,8 @@ func readRuleset(c rulesetSource) (facts.Ruleset, []facts.Warning, error) {
 			fc := facts.Chain{
 				Name:   ch.Name,
 				Base:   ch.Hooknum != nil,
-				Hook:   HookName(ch.Hooknum),
+				Hook:   HookName(ch.Hooknum, t.Family),
+				Device: ch.Device,
 				Policy: PolicyName(ch.Policy),
 			}
 			if ch.Priority != nil {
@@ -211,10 +212,32 @@ func FamilyName(f nftables.TableFamily) string {
 	return fmt.Sprintf("family%d", f)
 }
 
+// nfInetIngress is NF_INET_INGRESS, the inet family's own ingress hook,
+// added in kernel 5.10. x/sys does not export it, and its value does not
+// collide with the five NF_INET hooks below it.
+const nfInetIngress = 5
+
 // HookName returns the empty string for a regular (non-base) chain.
-func HookName(h *nftables.ChainHook) string {
+//
+// The family is not decoration: hook numbers are per family and they
+// overlap. NF_NETDEV_INGRESS and NF_INET_PRE_ROUTING are both 0, and
+// NF_NETDEV_EGRESS and NF_INET_LOCAL_IN are both 1, so naming a hook
+// without knowing the family called a netdev ingress chain "prerouting".
+// The evaluator then skipped it as a table of the wrong family, and a
+// chain that can drop every packet arriving on a device was invisible to
+// an audit whose whole job is to notice that.
+func HookName(h *nftables.ChainHook, family nftables.TableFamily) string {
 	if h == nil {
 		return ""
+	}
+	if family == nftables.TableFamilyNetdev {
+		switch *h {
+		case *nftables.ChainHookIngress:
+			return "ingress"
+		case *nftables.ChainHookEgress:
+			return "egress"
+		}
+		return "unknown"
 	}
 	switch *h {
 	case *nftables.ChainHookPrerouting:
@@ -227,6 +250,8 @@ func HookName(h *nftables.ChainHook) string {
 		return "output"
 	case *nftables.ChainHookPostrouting:
 		return "postrouting"
+	case nfInetIngress:
+		return "ingress"
 	}
 	return "unknown"
 }
