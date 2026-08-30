@@ -700,10 +700,18 @@ table inet filter {
 
 // firewalld's reverse-path rule, which sits in prerouting on every host it
 // manages and so is walked for every packet. Undecoded it made every IPv6
-// verdict on such a host unknown. The namespace has a route back out the
-// arrival interface, so the lookup is present, the drop does not fire, and
-// the port resolves.
-func TestFibReversePathResolves(t *testing.T) {
+// verdict on such a host unknown.
+//
+// Both halves are asserted, because the second is the one that keeps the
+// first honest. With a default route out the arrival interface the lookup
+// is present, the drop does not fire, and the port resolves. Without one,
+// whyopen has no route to the internet source and refuses: it does not
+// conclude the route is missing, which would drop the packet and report
+// the port filtered on a routing table it may have read incompletely.
+//
+// The namespace starts without a default route, which is how this test
+// found its own first draft wrong.
+func TestFibReversePathResolvesOnlyWithARouteBack(t *testing.T) {
 	requireRoot(t)
 	requireTools(t, "ip", "nft", "python3")
 
@@ -726,6 +734,18 @@ table inet filter {
 	v := verdictFor(evaluate(collectIn(t, ns)), 8080, "ip")
 	if v == nil {
 		t.Fatal("no verdict for 8080")
+	}
+	if v.Result != "unknown" {
+		t.Fatalf("8080 = %s (%s), want unknown: this namespace has no route to the internet "+
+			"source, and whyopen refuses rather than deciding the route is missing", v.Result, v.Reason)
+	}
+
+	// Now give it what a real host has.
+	nsRun(t, ns, "ip", "route", "add", "default", "via", "203.0.113.1")
+
+	v = verdictFor(evaluate(collectIn(t, ns)), 8080, "ip")
+	if v == nil {
+		t.Fatal("no verdict for 8080 after adding the default route")
 	}
 	if v.Result != "reachable" {
 		t.Fatalf("8080 = %s (%s), want reachable: the route back leaves the arrival interface, "+
