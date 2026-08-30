@@ -13,7 +13,10 @@ import (
 // port.
 var order = map[string]int{"reachable": 0, "unknown": 1, "filtered": 2}
 
-func Table(w io.Writer, vs []model.Verdict, warns []facts.Warning) {
+// worstFirst copies the verdicts into the order both output modes print
+// them in, so a script reading --json sees the same ranking a person
+// reading the table does.
+func worstFirst(vs []model.Verdict) []model.Verdict {
 	sorted := make([]model.Verdict, len(vs))
 	copy(sorted, vs)
 	for i := 1; i < len(sorted); i++ {
@@ -21,6 +24,11 @@ func Table(w io.Writer, vs []model.Verdict, warns []facts.Warning) {
 			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
 		}
 	}
+	return sorted
+}
+
+func Table(w io.Writer, vs []model.Verdict, warns []facts.Warning) {
+	sorted := worstFirst(vs)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "RESULT\tPORT\tFAMILY\tOWNER\tBIND\tWHY")

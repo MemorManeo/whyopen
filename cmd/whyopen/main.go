@@ -20,7 +20,7 @@ const usage = `whyopen: what is actually reachable from the internet, and why.
 
 Usage:
   whyopen collect [-o FILE]        snapshot this host into a facts document
-  whyopen check [-facts FILE] [-explain PORT] [-policy FILE]
+  whyopen check [-facts FILE] [-explain PORT] [-policy FILE] [-json]
                                     report what is reachable, and why
   whyopen policy init [-o FILE]    write a policy from what is reachable now
   whyopen version                  print the build version
@@ -70,6 +70,13 @@ func defaultVersionInfo() versionInfo {
 // version it installed, and for a build from a checkout the VCS revision
 // and commit time as well. Whatever the linker did inject wins: a release
 // build is told its own tag, which is more precise than either.
+// currentVersion is what this build reports about itself, resolved once
+// for the two callers that need it.
+func currentVersion() versionInfo {
+	info, ok := debug.ReadBuildInfo()
+	return resolveVersion(defaultVersionInfo(), info, ok)
+}
+
 func resolveVersion(v versionInfo, info *debug.BuildInfo, ok bool) versionInfo {
 	if !ok || info == nil {
 		return v
@@ -168,8 +175,7 @@ func runPolicy(args []string) int {
 }
 
 func runVersion() int {
-	info, ok := debug.ReadBuildInfo()
-	v := resolveVersion(defaultVersionInfo(), info, ok)
+	v := currentVersion()
 	fmt.Printf("whyopen %s (commit %s, built %s)\n", v.Version, v.Commit, v.Date)
 	return exitOK
 }
@@ -224,6 +230,7 @@ func runCheck(args []string) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	factsPath := fs.String("facts", "", "evaluate this facts document instead of collecting one")
 	policyPath := fs.String("policy", "", "check the verdicts against this policy file")
+	jsonOut := fs.Bool("json", false, "write the verdict set as a JSON document instead of a table")
 	explain := fs.Int("explain", 0, "print the full rule path for this port")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -249,25 +256,51 @@ func runCheck(args []string) int {
 		return code
 	}
 
-	verdicts := model.Evaluate(f, model.InternetZone())
+	zone := model.InternetZone()
+	verdicts := model.Evaluate(f, zone)
+
+	// The policy is checked against the whole verdict set before anything
+	// is printed, so every output mode reports the same judgement and the
+	// same exit code regardless of what it chose to show.
+	var res *policy.Result
+	if *policyPath != "" {
+		r := policy.Check(pol, verdicts)
+		res = &r
+	}
+
+	if *jsonOut {
+		shown := verdicts
+		if *explain != 0 {
+			shown = onPort(verdicts, *explain)
+		}
+		err := report.JSON(os.Stdout, shown, report.JSONOptions{
+			Version:      currentVersion().Version,
+			Hostname:     f.Host.Hostname,
+			Zone:         zone.Name,
+			Warnings:     f.Warnings,
+			Policy:       res,
+			PolicySource: *policyPath,
+			WithPath:     *explain != 0,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "write json: %v\n", err)
+			return exitError
+		}
+		return checkExitCode(f, res)
+	}
 
 	if *explain != 0 {
-		for _, v := range verdicts {
-			if int(v.Endpoint.Port) == *explain {
-				report.Explain(os.Stdout, v)
-			}
+		for _, v := range onPort(verdicts, *explain) {
+			report.Explain(os.Stdout, v)
 		}
 	} else {
 		report.Table(os.Stdout, verdicts, f.Warnings)
 	}
 
-	// The policy block prints in every output mode, including --explain,
-	// so an exit code the policy produced always has a visible reason.
-	var res *policy.Result
-	if *policyPath != "" {
-		r := policy.Check(pol, verdicts)
-		report.Policy(os.Stdout, r, *policyPath)
-		res = &r
+	// The policy block prints in every text mode, including --explain, so
+	// an exit code the policy produced always has a visible reason.
+	if res != nil {
+		report.Policy(os.Stdout, *res, *policyPath)
 	}
 
 	// One shared decision for every output mode: whatever check just
@@ -276,6 +309,19 @@ func runCheck(args []string) int {
 	// ruleset is a tool error, not a clean run, no matter how it was
 	// displayed.
 	return checkExitCode(f, res)
+}
+
+// onPort narrows a verdict set to one port, which is what --explain asks
+// for. Both families of it are kept: they are separate verdicts and can
+// disagree.
+func onPort(vs []model.Verdict, port int) []model.Verdict {
+	var out []model.Verdict
+	for _, v := range vs {
+		if int(v.Endpoint.Port) == port {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // checkExitCode ranks the ways a run can end, worst first. An unreadable

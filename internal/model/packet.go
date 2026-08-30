@@ -26,14 +26,16 @@ type Packet struct {
 type Action struct {
 	Kind  string // accept | drop | return | jump | goto | continue | dnat | none
 	Chain string
-	DNAT  *dnat
+	DNAT  *DNAT
 }
 
-// dnat is the single resolved rewrite target for a matched DNAT rule. Unlike
+// DNAT is the single resolved rewrite target for a matched DNAT rule. Unlike
 // facts.DNATInfo, which genuinely describes a port range (MinPort/MaxPort),
-// a dnat value names one concrete port whyopen will follow, so the field is
-// just Port.
-type dnat struct {
+// a DNAT value names one concrete port whyopen will follow, so the field is
+// just Port. It is exported so that report can render it: the verdict
+// schema report writes is deliberately its own shape, not this type
+// marshalled, but it still has to read this one.
+type DNAT struct {
 	IP   netip.Addr
 	Port uint16
 }

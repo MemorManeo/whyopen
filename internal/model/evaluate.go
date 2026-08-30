@@ -44,7 +44,7 @@ type Verdict struct {
 	Result   string   `json:"result"` // reachable | filtered | unknown
 	Reason   string   `json:"reason,omitempty"`
 	Path     []Hit    `json:"path,omitempty"`
-	DNAT     *dnat    `json:"-"`
+	DNAT     *DNAT    `json:"-"`
 }
 
 // Evaluate returns one verdict per endpoint per address family it serves.

@@ -132,7 +132,7 @@ ruleset; see Requirements above.
 
 ```
 whyopen collect [-o FILE]                      snapshot this host into a facts document
-whyopen check [-facts FILE] [-explain PORT] [-policy FILE]
+whyopen check [-facts FILE] [-explain PORT] [-policy FILE] [-json]
                                                report what is reachable, and why
 whyopen policy init [-o FILE] [-facts FILE]    write a policy from what is reachable now
 whyopen version                                print the build version
@@ -148,6 +148,30 @@ or replay a bug report, without re-collecting.
 `whyopen check -explain PORT` prints the full rule path for one port: every
 base chain hit, in traversal order, with the handle and an nft-like
 rendering of each rule.
+
+### `--json`
+
+`whyopen check --json` writes the verdict set as a versioned document
+instead of a table, so the tool composes with whatever reads it:
+
+```
+$ whyopen check --json | jq '.verdicts[] | select(.result=="reachable") | "\(.port)/\(.proto)"'
+"80/tcp"
+"443/tcp"
+```
+
+The document carries `schema_version`, the build that produced it, the
+hostname, the zone, every verdict, any collection warnings, and the policy
+result when `--policy` was given, so a reader gets the judgement along
+with the verdicts rather than having to re-implement it. `schema_version`
+is its own number, not the facts document's: one describes what was
+collected, the other what was concluded.
+
+The ordered rule path is the expensive half of the document, so it is
+included only under `--explain PORT`, which narrows the document to that
+port exactly as it narrows the text output. Each hit carries the table,
+chain, hook, handle and an nft-like rendering of the rule. The exit code
+is the same in either output mode.
 
 ### Guardrail: the policy file
 

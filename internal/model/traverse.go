@@ -40,7 +40,7 @@ var knownHooks = map[string]bool{
 type Result struct {
 	Kind   string // accept | drop | unknown
 	Reason string
-	DNAT   *dnat
+	DNAT   *DNAT
 }
 
 // Traverse pushes the packet through every base chain registered on one hook,
@@ -111,7 +111,7 @@ type walker struct {
 	family string
 	pkt    *Packet
 	hits   []Hit
-	dnat   *dnat
+	dnat   *DNAT
 }
 
 func (w *walker) findChain(table, name string) (facts.Chain, bool) {
