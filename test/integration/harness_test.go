@@ -83,7 +83,7 @@ func newNetns(t *testing.T) string {
 	// Interface names are capped at 15 bytes, so keep the suffix short.
 	ns := fmt.Sprintf("wo%d", os.Getpid()%100000)
 	hostSide := "veth-" + ns
-	nsSide := "vethn-" + ns
+	nsSide := nsSideName(ns)
 
 	// The names derive from the pid, so they can recur across runs. A run
 	// killed by a CI timeout skips its own cleanup and leaves the namespace
@@ -115,6 +115,11 @@ func newNetns(t *testing.T) string {
 	nsRun(t, ns, "ip", "link", "set", nsSide, "up")
 	return ns
 }
+
+// nsSideName is the namespace's own end of the veth pair newNetns built,
+// which is the device its global address lives on and therefore the one a
+// packet from outside arrives on.
+func nsSideName(ns string) string { return "vethn-" + ns }
 
 func nsRun(t *testing.T, ns string, name string, args ...string) string {
 	t.Helper()

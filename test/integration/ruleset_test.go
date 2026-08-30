@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -452,5 +453,78 @@ table inet filter {
 		if v.Result != tc.want {
 			t.Errorf("port %d = %s (%s), want %s", tc.port, v.Result, v.Reason, tc.want)
 		}
+	}
+}
+
+// The ingress hook against a real kernel. Its hook number is
+// NF_NETDEV_INGRESS, which is also NF_INET_PRE_ROUTING, so before v0.4
+// whyopen named such a chain "prerouting", skipped its table as the wrong
+// family, and reported the port reachable while the kernel dropped every
+// packet arriving on that device. This is the one direction an exposure
+// audit must never be wrong in, and it was found by reading code, so it
+// is asserted here against a kernel that actually has the hook.
+func TestIngressChainOnTheArrivalDeviceIsUnknown(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	listenIn(t, ns, "0.0.0.0", "22")
+
+	applyNftRuleset(t, ns, fmt.Sprintf(`
+table inet filter {
+	chain input {
+		type filter hook input priority 0; policy accept;
+	}
+}
+table netdev guard {
+	chain ingress-guard {
+		type filter hook ingress device "%s" priority -500; policy drop;
+	}
+}
+`, nsSideName(ns)))
+
+	v := verdictFor(evaluate(collectIn(t, ns)), 22, "ip")
+	if v == nil {
+		t.Fatal("no verdict for port 22")
+	}
+	if v.Result != "unknown" {
+		t.Fatalf("port 22 = %s (%s), want unknown: an ingress chain on the arrival device "+
+			"can drop the packet before any rule whyopen walks", v.Result, v.Reason)
+	}
+	if !strings.Contains(v.Reason, "ingress") {
+		t.Errorf("reason = %q, want it to name the ingress hook", v.Reason)
+	}
+}
+
+// The hook is per device, so a chain on another one cannot see this
+// packet. Without this, closing the hole above would have made every port
+// on any host with an ingress chain anywhere report unknown.
+func TestIngressChainOnAnotherDeviceLeavesTheVerdictAlone(t *testing.T) {
+	requireRoot(t)
+	requireTools(t, "ip", "nft", "python3")
+
+	ns := newNetns(t)
+	listenIn(t, ns, "0.0.0.0", "22")
+
+	applyNftRuleset(t, ns, `
+table inet filter {
+	chain input {
+		type filter hook input priority 0; policy accept;
+	}
+}
+table netdev guard {
+	chain ingress-guard {
+		type filter hook ingress device "lo" priority -500; policy drop;
+	}
+}
+`)
+
+	v := verdictFor(evaluate(collectIn(t, ns)), 22, "ip")
+	if v == nil {
+		t.Fatal("no verdict for port 22")
+	}
+	if v.Result != "reachable" {
+		t.Fatalf("port 22 = %s (%s), want reachable: the ingress chain is on lo, not on the "+
+			"device the packet arrives on", v.Result, v.Reason)
 	}
 }
